@@ -1,0 +1,18 @@
+# ตั้งค่าหน้าตาและพฤติกรรมของเว็บ
+# ไฟล์นี้ปลอดภัยที่จะขึ้น GitHub (ไม่มีความลับ)
+# ⚠️ ห้ามสับสนกับ .streamlit/secrets.toml ซึ่งมีความลับและถูกกันไว้ใน .gitignore แล้ว
+
+[theme]
+primaryColor = "#1f4e79"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f7fa"
+textColor = "#222222"
+
+[server]
+# ไม่ต้องรับไฟล์อัปโหลด จำกัดไว้เพื่อความปลอดภัยและประหยัดหน่วยความจำ
+maxUploadSize = 2
+enableXsrfProtection = true
+
+[browser]
+# ไม่ส่งสถิติการใช้งานออกไปข้างนอก
+gatherUsageStats = false

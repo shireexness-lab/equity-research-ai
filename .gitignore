@@ -1,0 +1,20 @@
+# ห้ามให้ไฟล์เหล่านี้ขึ้น GitHub เด็ดขาด
+# (เพราะ Streamlit Cloud ฟรีบังคับให้ repo เป็น public = คนทั้งโลกเห็นโค้ด)
+
+# ความลับ — สำคัญที่สุด
+.streamlit/secrets.toml
+.env
+*.key
+
+# ห้องแยกของ Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# ข้อมูลที่ดึงมา (ดึงใหม่ได้เสมอ ไม่ต้องเก็บใน git)
+cache/
+output/
+
+# ขยะของ Mac
+.DS_Store

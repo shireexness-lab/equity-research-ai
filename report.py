@@ -1,0 +1,670 @@
+"""
+report.py — Part 15 : Report Generator
+=======================================
+หน้าที่ : ประกอบทุกอย่างเป็นรายงาน PDF ภาษาไทย พร้อมกราฟ
+
+แนวทางที่เลือกและเหตุผล
+------------------------
+matplotlib → รูป PNG → ฝังใน HTML → WeasyPrint → PDF
+
+ทำไมไม่ใช้ไลบรารีสร้าง PDF ตรง ๆ (เช่น reportlab)
+  • HTML/CSS จัดหน้าง่ายกว่ามาก และแก้ดีไซน์ได้โดยไม่ต้องแก้โค้ด Python
+  • รองรับฟอนต์ไทยดีกว่า (สระบน-ล่างวางตำแหน่งถูก)
+  • ถ้าอนาคตอยากทำเป็นหน้าเว็บ ใช้ HTML เดิมได้เลย
+
+สิ่งที่ต้องมีก่อนใช้ : ฟอนต์ไทย
+--------------------------------
+ดาวน์โหลดครั้งเดียว (ฟรี จาก Google Fonts) ด้วยคำสั่งใน Terminal :
+
+    mkdir -p fonts
+    curl -L -o fonts/Sarabun-Regular.ttf \\
+      https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Regular.ttf
+    curl -L -o fonts/Sarabun-Bold.ttf \\
+      https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf
+
+ถ้าไม่มีฟอนต์ ตัวอักษรไทยใน PDF จะกลายเป็นสี่เหลี่ยม ⬛⬛⬛
+
+วิธีใช้จาก Terminal
+-------------------
+    python3 report.py AAPL
+    python3 report.py PTT.BK --rf 0.025
+    python3 report.py AAPL --open        # สร้างเสร็จแล้วเปิดดูเลย
+"""
+
+import argparse
+import base64
+import io
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+import matplotlib
+matplotlib.use("Agg")          # ไม่ต้องเปิดหน้าต่าง (สำคัญตอน deploy ขึ้นเว็บ)
+import matplotlib.pyplot as plt
+from matplotlib import font_manager
+
+from bands import build as build_bands
+from data_layer import get_stock_data
+from ratios import compute_ratios
+from statements import analyze
+from valuation import value_stock
+
+BASE_DIR = Path(__file__).resolve().parent
+FONT_DIR = BASE_DIR / "fonts"
+OUT_DIR = BASE_DIR / "output"
+
+# สีประจำรายงาน
+C_MAIN = "#1f4e79"      # น้ำเงินเข้ม
+C_ACCENT = "#c55a11"    # ส้ม
+C_GOOD = "#2e7d32"      # เขียว
+C_BAD = "#c62828"       # แดง
+C_GREY = "#8a8a8a"
+
+
+# ---------------------------------------------------------------------------
+# ฟอนต์ไทย
+# ---------------------------------------------------------------------------
+
+def ensure_font() -> Path:
+    """ตรวจว่ามีฟอนต์ไทยไหม ถ้าไม่มีบอกวิธีโหลดให้ชัดเจน"""
+    reg = FONT_DIR / "Sarabun-Regular.ttf"
+    if reg.exists():
+        return reg
+    raise FileNotFoundError(
+        "ไม่พบฟอนต์ไทย — ถ้าไม่มี ตัวอักษรไทยใน PDF จะกลายเป็นสี่เหลี่ยม\n\n"
+        "  แก้โดยพิมพ์ 3 บรรทัดนี้ใน Terminal (ทำครั้งเดียวพอ):\n\n"
+        "    mkdir -p fonts\n"
+        "    curl -L -o fonts/Sarabun-Regular.ttf "
+        "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Regular.ttf\n"
+        "    curl -L -o fonts/Sarabun-Bold.ttf "
+        "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf\n"
+    )
+
+
+def setup_matplotlib_font():
+    """บอก matplotlib ให้ใช้ฟอนต์ไทย ไม่งั้นชื่อแกนกราฟจะเป็นสี่เหลี่ยม"""
+    reg = ensure_font()
+    font_manager.fontManager.addfont(str(reg))
+    bold = FONT_DIR / "Sarabun-Bold.ttf"
+    if bold.exists():
+        font_manager.fontManager.addfont(str(bold))
+    # อ่านชื่อวงศ์ฟอนต์จากไฟล์จริง ไม่เดาว่าชื่อ "Sarabun"
+    # (ถ้าเดาแล้วชื่อไม่ตรง matplotlib จะถอยไปใช้ฟอนต์อังกฤษเงียบ ๆ
+    #  ผลคือชื่อแกนกราฟภาษาไทยกลายเป็นสี่เหลี่ยมโดยไม่มีข้อความเตือนชัดเจน)
+    family = font_manager.FontProperties(fname=str(reg)).get_name()
+    plt.rcParams["font.family"] = family
+    plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["figure.dpi"] = 120
+
+
+# ---------------------------------------------------------------------------
+# ตัวช่วยสร้างกราฟ
+# ---------------------------------------------------------------------------
+
+def _fig_b64(fig) -> str:
+    """แปลงกราฟเป็นข้อความ base64 เพื่อฝังลง HTML โดยตรง (ไม่ต้องมีไฟล์แยก)"""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _style(ax, title="", ylabel=""):
+    ax.set_title(title, fontsize=11, color=C_MAIN, pad=10, fontweight="bold")
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.grid(axis="y", alpha=0.25, linewidth=0.6)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(labelsize=8)
+
+
+def chart_revenue_profit(R):
+    yrs = [y[:4] for y in R["years"]]
+    rev = R["raw"]["revenue"] / 1e9
+    ni = R["raw"]["net_income"] / 1e9
+    # ใช้แท่งคู่เคียงกัน ไม่ใช่แท่งซ้อนทับ
+    # เหตุผล : แท่งซ้อนทับทำให้คนอ่านเข้าใจผิดว่า "รายได้ + กำไร" ต้องบวกกัน
+    #          ทั้งที่กำไรเป็นส่วนหนึ่งของรายได้อยู่แล้ว
+    x = np.arange(len(yrs))
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    ax.bar(x - 0.2, rev, width=0.4, color=C_MAIN, label="รายได้รวม")
+    ax.bar(x + 0.2, ni, width=0.4, color=C_ACCENT, label="กำไรสุทธิ")
+    ax.set_xticks(x)
+    ax.set_xticklabels(yrs, rotation=45 if len(yrs) > 8 else 0)
+    _style(ax, "รายได้และกำไรสุทธิ", "พันล้าน")
+    ax.legend(fontsize=8, frameon=False)
+    return _fig_b64(fig)
+
+
+def chart_margins(R):
+    t, yrs = R["table"], [y[:4] for y in R["years"]]
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    for name, color in [("Gross Margin", C_MAIN), ("Operating Margin", C_ACCENT),
+                        ("Net Margin", C_GOOD)]:
+        if name in t.index:
+            ax.plot(yrs, t.loc[name].values, marker="o", ms=3, lw=1.6,
+                    color=color, label=name)
+    _style(ax, "อัตรากำไร (%)", "%")
+    ax.legend(fontsize=8, frameon=False)
+    plt.xticks(rotation=45 if len(yrs) > 8 else 0)
+    return _fig_b64(fig)
+
+
+def chart_returns(R):
+    t, yrs = R["table"], [y[:4] for y in R["years"]]
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    for name, color in [("ROE", C_MAIN), ("ROIC", C_ACCENT), ("ROA", C_GREY)]:
+        if name in t.index:
+            ax.plot(yrs, t.loc[name].values, marker="o", ms=3, lw=1.6,
+                    color=color, label=name)
+    _style(ax, "ผลตอบแทนต่อเงินทุน (%)", "%")
+    ax.legend(fontsize=8, frameon=False)
+    plt.xticks(rotation=45 if len(yrs) > 8 else 0)
+    return _fig_b64(fig)
+
+
+def chart_cashflow(R):
+    yrs = [y[:4] for y in R["years"]]
+    raw = R["raw"]
+    x = np.arange(len(yrs))
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    ax.bar(x - 0.2, raw["ocf"] / 1e9, width=0.4, color=C_MAIN, label="OCF")
+    ax.bar(x + 0.2, raw["fcf"] / 1e9, width=0.4, color=C_GOOD, label="FCF")
+    ax.plot(x, raw["capex"] / 1e9, color=C_BAD, lw=1.4, marker="o", ms=3, label="CapEx")
+    ax.set_xticks(x)
+    ax.set_xticklabels(yrs, rotation=45 if len(yrs) > 8 else 0)
+    _style(ax, "กระแสเงินสด", "พันล้าน")
+    ax.legend(fontsize=8, frameon=False)
+    return _fig_b64(fig)
+
+
+def chart_price_bands(data, b):
+    prices = data.get("prices")
+    fig, ax = plt.subplots(figsize=(7.2, 3.1))
+    if isinstance(prices, pd.DataFrame) and not prices.empty and "Close" in prices:
+        px = prices["Close"].dropna().tail(1800)   # ~7 ปีล่าสุด
+        ax.plot(px.index, px.values, lw=1.1, color=C_MAIN, label="ราคาปิด")
+    colors = {"Strong Buy": C_GOOD, "Buy": "#7cb342", "Hold": C_GREY,
+              "Reduce": "#ef6c00", "Sell": C_BAD}
+    for name, (lo, hi) in b["bands"].items():
+        if hi != float("inf"):
+            ax.axhline(hi, color=colors.get(name, C_GREY), ls="--", lw=1.0, alpha=0.85)
+            ax.text(1.005, hi, f" {name}", transform=ax.get_yaxis_transform(),
+                    fontsize=7, color=colors.get(name, C_GREY), va="center")
+    ax.axhline(b["มูลค่าที่ประเมินได้"], color="black", lw=1.4,
+               label="มูลค่าที่ประเมินได้")
+    _style(ax, "ราคาย้อนหลังเทียบช่วงราคาที่คำนวณได้", b["สกุลเงิน"])
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    return _fig_b64(fig)
+
+
+def chart_methods(v):
+    items = [(k, x) for k, x in v["methods"].items()
+             if x is not None and np.isfinite(x) and x > 0 and "ไม่นับ" not in k]
+    if not items:
+        return None
+    names = [k for k, _ in items][::-1]
+    vals = [x for _, x in items][::-1]
+    fig, ax = plt.subplots(figsize=(7.2, 0.42 * len(names) + 1.2))
+    ax.barh(names, vals, color=C_MAIN, alpha=0.85)
+    price = v["ราคาปัจจุบัน"]
+    if price:
+        ax.axvline(price, color=C_BAD, lw=1.6, label=f"ราคาตลาด {price:,.2f}")
+        ax.legend(fontsize=8, frameon=False)
+    for i, val in enumerate(vals):
+        ax.text(val, i, f" {val:,.0f}", va="center", fontsize=8, color=C_MAIN)
+    _style(ax, "มูลค่าต่อหุ้นจากแต่ละวิธี", "")
+    ax.grid(axis="x", alpha=0.25, linewidth=0.6)
+    ax.grid(axis="y", visible=False)
+    return _fig_b64(fig)
+
+
+def chart_pe_history(v):
+    h = v.get("historical")
+    if not h or not isinstance(h.get("ตาราง"), pd.DataFrame) or h["ตาราง"].empty:
+        return None
+    t = h["ตาราง"]
+    fig, ax = plt.subplots(figsize=(7.2, 2.7))
+    ax.bar(t.index, t["P/E"], color=C_MAIN, alpha=0.8)
+    ax.axhline(h["P/E ค่ากลาง"], color=C_ACCENT, ls="--", lw=1.3,
+               label=f"ค่ากลางทั้งช่วง {h['P/E ค่ากลาง']:.1f}x")
+    ax.axhline(h["P/E ค่ากลาง 5 ปีล่าสุด"], color=C_GOOD, ls="--", lw=1.3,
+               label=f"ค่ากลาง 5 ปีล่าสุด {h['P/E ค่ากลาง 5 ปีล่าสุด']:.1f}x")
+    _style(ax, "P/E ย้อนหลังรายปี", "เท่า")
+    ax.legend(fontsize=8, frameon=False)
+    plt.xticks(rotation=45 if len(t) > 8 else 0)
+    return _fig_b64(fig)
+
+
+# ---------------------------------------------------------------------------
+# ตัวช่วยสร้าง HTML
+# ---------------------------------------------------------------------------
+
+def esc(x):
+    return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fmt(x, dec=2, dash="—"):
+    if x is None or (isinstance(x, float) and not np.isfinite(x)) or pd.isna(x):
+        return dash
+    return f"{x:,.{dec}f}"
+
+
+def table_html(df: pd.DataFrame, units=None, first_col="รายการ", dec=2) -> str:
+    """แปลง DataFrame เป็นตาราง HTML"""
+    cols = [str(c)[:4] for c in df.columns]
+    h = ["<table><thead><tr><th class='lbl'>" + esc(first_col) + "</th>"]
+    h += [f"<th>{esc(c)}</th>" for c in cols]
+    h.append("</tr></thead><tbody>")
+    for name in df.index:
+        u = (units or {}).get(name, "")
+        h.append(f"<tr><td class='lbl'>{esc(name)}</td>")
+        for c in df.columns:
+            val = df.loc[name, c]
+            if pd.isna(val):
+                cell = "—"
+            elif u == "%":
+                cell = f"{val:,.1f}%"
+            elif u in ("วัน", "ล้าน"):
+                cell = f"{val:,.0f}"
+            else:
+                cell = f"{val:,.{dec}f}"
+            h.append(f"<td>{cell}</td>")
+        h.append("</tr>")
+    h.append("</tbody></table>")
+    return "".join(h)
+
+
+def kv_html(pairs) -> str:
+    rows = "".join(
+        f"<tr><td class='lbl'>{esc(k)}</td><td class='num'>{esc(v)}</td></tr>"
+        for k, v in pairs)
+    return f"<table class='kv'>{rows}</table>"
+
+
+def img(b64, caption="") -> str:
+    if not b64:
+        return ""
+    cap = f"<div class='cap'>{esc(caption)}</div>" if caption else ""
+    return f"<figure><img src='data:image/png;base64,{b64}'/>{cap}</figure>"
+
+
+CSS = """
+@font-face { font-family:'Sarabun'; src:url('FONT_REG') format('truetype');
+             font-weight:400; }
+@font-face { font-family:'Sarabun'; src:url('FONT_BOLD') format('truetype');
+             font-weight:700; }
+@page { size:A4; margin:15mm 13mm 16mm 13mm;
+  @bottom-center { content:"หน้า " counter(page) " / " counter(pages);
+                   font-family:'Sarabun'; font-size:8pt; color:#8a8a8a; }
+  @bottom-right { content:"เอกสารเพื่อการศึกษา ไม่ใช่คำแนะนำการลงทุน";
+                  font-family:'Sarabun'; font-size:7pt; color:#b0b0b0; } }
+body { font-family:'Sarabun'; font-size:9.5pt; color:#222; line-height:1.5; }
+h1 { font-size:22pt; color:#1f4e79; margin:0 0 2mm 0; }
+h2 { font-size:13pt; color:#1f4e79; margin:7mm 0 2mm 0;
+     border-bottom:1.5pt solid #1f4e79; padding-bottom:1mm; }
+h3 { font-size:10.5pt; color:#c55a11; margin:4mm 0 1.5mm 0; }
+.sub { color:#666; font-size:9pt; }
+.cover { text-align:center; padding-top:45mm; }
+.cover h1 { font-size:30pt; }
+.cover .tick { font-size:44pt; font-weight:700; color:#c55a11; letter-spacing:2pt; }
+.badge { display:inline-block; padding:2mm 6mm; border-radius:3mm;
+         font-size:15pt; font-weight:700; color:#fff; margin:3mm 0; }
+.big { font-size:15pt; font-weight:700; color:#1f4e79; }
+table { width:100%; border-collapse:collapse; margin:2mm 0 3mm 0; font-size:8pt; }
+th { background:#1f4e79; color:#fff; padding:1.4mm 1.6mm; text-align:right;
+     font-weight:400; }
+th.lbl, td.lbl { text-align:left; }
+td { padding:1.2mm 1.6mm; text-align:right; border-bottom:0.4pt solid #e3e3e3; }
+tbody tr:nth-child(even) { background:#f7f9fb; }
+table.kv td { border:none; padding:1mm 2mm; }
+table.kv td.lbl { color:#555; width:55%; }
+table.kv td.num { font-weight:700; color:#1f4e79; }
+figure { margin:2mm 0 4mm 0; text-align:center; }
+img { width:100%; }
+.cap { font-size:7.5pt; color:#888; margin-top:1mm; }
+.note { background:#fff8e1; border-left:2.5pt solid #c55a11;
+        padding:2mm 3mm; margin:2mm 0; font-size:8.5pt; }
+.warn { background:#fdecea; border-left:2.5pt solid #c62828;
+        padding:2mm 3mm; margin:2mm 0; font-size:8.5pt; }
+.ok { background:#edf7ed; border-left:2.5pt solid #2e7d32;
+      padding:2mm 3mm; margin:2mm 0; font-size:8.5pt; }
+.pagebreak { page-break-after:always; }
+.two { display:flex; gap:6mm; }
+.two > div { flex:1; }
+ul { margin:1mm 0 2mm 4mm; padding:0; }
+li { margin:0.6mm 0; }
+"""
+
+ZONE_COLOR = {"Strong Buy": "#1b5e20", "Buy": "#2e7d32", "Hold": "#757575",
+              "Reduce": "#ef6c00", "Sell": "#c62828"}
+
+
+# ---------------------------------------------------------------------------
+# ประกอบรายงาน
+# ---------------------------------------------------------------------------
+
+def build_html(data, S, R, v, b) -> str:
+    info = data.get("info", {})
+    cur = v["สกุลเงิน"]
+    price = v["ราคาปัจจุบัน"]
+    fair = b["มูลค่าที่ประเมินได้"]
+    zone = b["โซนปัจจุบัน"]
+    rel = b["ความน่าเชื่อถือ"]
+    today = datetime.now().strftime("%d/%m/%Y %H:%M")
+    name = info.get("longName") or info.get("shortName") or v["ticker"]
+
+    # ---------- ปก ----------
+    parts = [f"""
+<div class='cover'>
+  <div class='sub'>รายงานวิเคราะห์หลักทรัพย์</div>
+  <div class='tick'>{esc(v['ticker'])}</div>
+  <h1>{esc(name)}</h1>
+  <div class='sub'>{esc(info.get('sector','-'))} · {esc(info.get('industry','-'))}
+       · {esc(info.get('exchange','-'))}</div>
+  <div class='badge' style='background:{ZONE_COLOR.get(zone,"#757575")}'>{esc(zone)}</div>
+  <div class='big'>ราคาตลาด {fmt(price)} {esc(cur)} ·
+       มูลค่าที่ประเมินได้ {fmt(fair)} {esc(cur)}</div>
+  <div class='sub' style='margin-top:3mm'>
+       ส่วนต่าง {fmt((fair/price-1)*100,1)}% ·
+       ความน่าเชื่อถือ {esc(rel['ระดับ'])} ({rel['คะแนน']}/100)</div>
+  <div class='sub' style='margin-top:14mm'>
+       ข้อมูล {v['ปีข้อมูล']} ปี จาก {esc(v['แหล่งงบ'])}<br/>
+       สร้างเมื่อ {esc(today)}</div>
+  <div class='note' style='margin-top:14mm;text-align:left'>
+    เอกสารนี้สร้างโดยระบบอัตโนมัติเพื่อการศึกษาส่วนบุคคล
+    <b>ไม่ใช่คำแนะนำการลงทุน</b> ตัวเลขทั้งหมดคำนวณจากงบการเงินที่เผยแพร่ต่อสาธารณะ
+    ด้วยสูตรและสมมติฐานที่ระบุไว้ในเอกสาร ผู้อ่านควรตรวจสอบด้วยตนเองก่อนตัดสินใจใด ๆ
+  </div>
+</div>
+<div class='pagebreak'></div>
+"""]
+
+    # ---------- สรุปผู้บริหาร ----------
+    sm = R["summary"]
+    parts.append("<h2>1. สรุปผู้บริหาร</h2>")
+    parts.append("<div class='two'><div>")
+    parts.append(kv_html([
+        ("ราคาตลาด", f"{fmt(price)} {cur}"),
+        ("มูลค่าที่ประเมินได้", f"{fmt(fair)} {cur}"),
+        ("ส่วนต่าง", f"{fmt((fair/price-1)*100,1)}%"),
+        ("โซนราคา", zone),
+        ("ส่วนเผื่อความปลอดภัย", f"{b['mos ที่ใช้']:.0%}"),
+        ("ราคาที่เข้าโซน Buy", f"{fmt(b['ราคาที่เข้าโซน Buy'])} {cur}"),
+    ]))
+    parts.append("</div><div>")
+    parts.append(kv_html([
+        ("จำนวนปีข้อมูล", f"{sm['จำนวนปีข้อมูล']} ปี"),
+        ("CAGR รายได้", f"{fmt(sm['CAGR รายได้ (%)'],1)}%"),
+        ("CAGR กำไรสุทธิ", f"{fmt(sm['CAGR กำไรสุทธิ (%)'],1)}%"),
+        ("CAGR FCF", f"{fmt(sm['CAGR FCF (%)'],1)}%"),
+        ("ROE เฉลี่ย", f"{fmt(sm['ROE เฉลี่ย (%)'],1)}%"),
+        ("ROIC เฉลี่ย", f"{fmt(sm['ROIC เฉลี่ย (%)'],1)}%"),
+    ]))
+    parts.append("</div></div>")
+
+    ig = v.get("อัตราโตที่ตลาดคาดหวัง")
+    if ig is not None:
+        g_hist = sm.get("CAGR FCF (%)")
+        parts.append(f"""<div class='note'>
+        <b>ราคาวันนี้กำลังบอกอะไร (Reverse DCF)</b><br/>
+        ที่ราคา {fmt(price)} {esc(cur)} ตลาดคาดว่ากระแสเงินสดอิสระจะโตปีละ
+        <b>{ig:+.1%}</b> ติดต่อกัน {v['years1']} ปี<br/>
+        ขณะที่ย้อนหลัง {v['ปีข้อมูล']} ปีที่ผ่านมา บริษัททำได้จริง
+        <b>{fmt(g_hist,1)}%</b> ต่อปี<br/>
+        คำถามที่ต้องตอบก่อนตัดสินใจ : เชื่อหรือไม่ว่าบริษัทจะทำได้ตามที่ตลาดคาด
+        </div>""")
+
+    cls = "warn" if rel["คะแนน"] < 50 else ("note" if rel["คะแนน"] < 75 else "ok")
+    warns = "".join(f"<li>{esc(x)}</li>" for x in rel["คำเตือน"]) or "<li>ไม่พบข้อจำกัดสำคัญ</li>"
+    parts.append(f"""<div class='{cls}'>
+      <b>ความน่าเชื่อถือของการประเมิน : {esc(rel['ระดับ'])} ({rel['คะแนน']}/100)</b>
+      <ul>{warns}</ul></div>""")
+
+    # ---------- ผลประกอบการ ----------
+    parts.append("<h2>2. ผลประกอบการย้อนหลัง</h2>")
+    parts.append(img(chart_revenue_profit(R)))
+    parts.append(img(chart_margins(R)))
+    parts.append("<h3>งบกำไรขาดทุน (หน่วย: ล้าน)</h3>")
+    parts.append(table_html(S["income"] / 1e6, dec=0))
+    parts.append("<div class='pagebreak'></div>")
+
+    # ---------- ผลตอบแทนและกระแสเงินสด ----------
+    parts.append("<h2>3. ผลตอบแทนต่อเงินทุนและกระแสเงินสด</h2>")
+    parts.append(img(chart_returns(R)))
+    parts.append(img(chart_cashflow(R)))
+    parts.append(f"""<div class='note'>
+      <b>คุณภาพกำไร</b> — OCF ÷ กำไรสุทธิ เฉลี่ย
+      <b>{fmt(sm['OCF/กำไรสุทธิ เฉลี่ย (x)'])} เท่า</b><br/>
+      มากกว่า 1 เท่า = กำไรที่รายงานแปลงเป็นเงินสดจริงได้ครบ (สัญญาณดี)<br/>
+      ต่ำกว่า 1 เท่าติดต่อกันหลายปี = กำไรอาจอยู่ในรูปลูกหนี้หรือสินค้าคงเหลือ ต้องระวัง
+      </div>""")
+    parts.append("<div class='pagebreak'></div>")
+
+    # ---------- อัตราส่วน ----------
+    parts.append("<h2>4. อัตราส่วนทางการเงิน</h2>")
+    for gname, names in R["groups"].items():
+        sub = R["table"].loc[[n for n in names if n in R["table"].index]]
+        if sub.empty:
+            continue
+        parts.append(f"<h3>{esc(gname)}</h3>")
+        parts.append(table_html(sub, units=R["units"]))
+    parts.append("<div class='pagebreak'></div>")
+
+    # ---------- ประเมินมูลค่า ----------
+    parts.append("<h2>5. การประเมินมูลค่า</h2>")
+    w = v["wacc_detail"]
+    i = v["inputs"]
+    parts.append("<div class='two'><div><h3>อัตราคิดลด (WACC)</h3>")
+    parts.append(kv_html([
+        ("Beta", fmt(w["beta"])),
+        ("พันธบัตร (rf)", f"{w['พันธบัตร (rf)']:.2%}"),
+        ("ต้นทุนส่วนทุน (CAPM)", f"{w['ต้นทุนส่วนทุน']:.2%}"),
+        ("ต้นทุนหนี้", f"{w['ต้นทุนหนี้']:.2%}"),
+        ("อัตราภาษี", f"{w['อัตราภาษี']:.2%}"),
+        ("น้ำหนัก ทุน / หนี้", f"{w['น้ำหนักส่วนทุน']:.0%} / {w['น้ำหนักหนี้']:.0%}"),
+        ("WACC ที่ใช้", f"{v['wacc ที่ใช้']:.2%}"),
+    ]))
+    parts.append("</div><div><h3>สมมติฐาน DCF</h3>")
+    parts.append(kv_html([
+        ("FCF ปีฐาน (เฉลี่ย 3 ปี)", f"{i['fcf0 (เฉลี่ย 3 ปี)']/1e6:,.0f} ล้าน"),
+        ("อัตราโตช่วงแรก (g1)", f"{v['g1 ที่ใช้']:.2%}"),
+        ("อัตราโตถาวร (g2)", f"{v['g2 ที่ใช้']:.2%}"),
+        ("จำนวนปีช่วงโตสูง", f"{v['years1']} ปี"),
+        ("หนี้สินสุทธิ", f"{i['net_debt']/1e6:,.0f} ล้าน"),
+        ("สัดส่วนมูลค่าสุดท้าย", f"{v['base_dcf']['สัดส่วนมูลค่าสุดท้าย']:.0%}"),
+    ]))
+    parts.append("</div></div>")
+
+    if v["base_dcf"]["สัดส่วนมูลค่าสุดท้าย"] > 0.75:
+        parts.append("""<div class='warn'>มูลค่าเกิน 75% มาจากช่วง
+        "ปีที่ 11 เป็นต้นไป" ซึ่งเป็นช่วงที่คาดการณ์ได้ยากที่สุด
+        ผลลัพธ์จึงไวต่อสมมติฐานมาก ควรอ่านคู่กับตารางความไวเสมอ</div>""")
+
+    parts.append(img(chart_methods(v)))
+    parts.append("<h3>ตารางความไว (Sensitivity)</h3>")
+    parts.append(table_html(v["sensitivity"], first_col="WACC \\ g1", dec=0))
+    parts.append("""<div class='note'>อ่านตารางนี้อย่างไร : ถ้าตัวเลขกระจายกว้างมาก
+    แปลว่าอย่าเชื่อ "มูลค่าตัวเดียว" ให้ใช้เป็นช่วงแทน</div>""")
+    parts.append("<div class='pagebreak'></div>")
+
+    # ---------- Multiple ย้อนหลัง ----------
+    h = v.get("historical")
+    if h and isinstance(h.get("ตาราง"), pd.DataFrame) and not h["ตาราง"].empty:
+        parts.append("<h2>6. อัตราส่วนราคาย้อนหลัง</h2>")
+        parts.append(img(chart_pe_history(v)))
+        parts.append(table_html(h["ตาราง"].T, first_col="รายการ"))
+        parts.append(f"""<div class='note'>
+        <b>ทำไมต้องดูสองค่า</b><br/>
+        ค่ากลางทั้งช่วง <b>{fmt(h['P/E ค่ากลาง'],1)} เท่า</b> =
+        สมมติว่าตลาดจะกลับไปให้ราคาแบบยุคเก่า (อนุรักษ์นิยม)<br/>
+        ค่ากลาง 5 ปีล่าสุด <b>{fmt(h['P/E ค่ากลาง 5 ปีล่าสุด'],1)} เท่า</b> =
+        สมมติว่ามุมมองปัจจุบันของตลาดจะอยู่ต่อไป<br/>
+        ทั้งสองเป็น "มุมมอง" ไม่ใช่ข้อเท็จจริง</div>""")
+        parts.append("<div class='pagebreak'></div>")
+
+    # ---------- ช่วงราคา ----------
+    parts.append("<h2>7. ช่วงราคาและส่วนเผื่อความปลอดภัย</h2>")
+    parts.append(img(chart_price_bands(data, b)))
+    rows = []
+    for bn, (lo, hi) in b["bands"].items():
+        if hi == float("inf"):
+            rng = f"มากกว่า {fmt(lo)}"
+        elif lo == 0:
+            rng = f"ต่ำกว่า {fmt(hi)}"
+        else:
+            rng = f"{fmt(lo)} – {fmt(hi)}"
+        mark = "  ← ราคาปัจจุบัน" if bn == zone else ""
+        rows.append((bn, rng + f" {cur}" + mark))
+    parts.append(kv_html(rows))
+    reasons = "".join(f"<li>{esc(r)}</li>" for r in b["mos_detail"]["เหตุผล"])
+    parts.append(f"""<div class='note'>
+      <b>ส่วนเผื่อความปลอดภัย {b['mos ที่ใช้']:.0%} — คำนวณจาก</b><ul>{reasons}</ul>
+      แนวคิด : เราไม่มีวันประเมินมูลค่าได้แม่นยำ จึงต้องซื้อต่ำกว่าที่ประเมินไว้พอสมควร
+      เพื่อให้ยังไม่ขาดทุนแม้ประเมินผิด</div>""")
+
+    # ---------- ที่มาข้อมูล ----------
+    parts.append("<h2>8. ที่มาของข้อมูลและข้อจำกัด</h2>")
+    parts.append(kv_html([
+        ("งบการเงิน", v["แหล่งงบ"]),
+        ("จำนวนปี", f"{v['ปีข้อมูล']} ปี"),
+        ("ราคาหุ้นและข้อมูลบริษัท", "yfinance (Yahoo Finance)"),
+        ("วันที่ดึงข้อมูล", data.get("fetched_at", "-")),
+        ("วันที่สร้างรายงาน", today),
+    ]))
+    parts.append("""<div class='warn'>
+    <b>ข้อจำกัดที่ต้องรู้</b>
+    <ul>
+      <li>ตัวเลขทั้งหมดคำนวณจากงบการเงินในอดีต ไม่รับประกันผลในอนาคต</li>
+      <li>DCF ไวต่อสมมติฐานมาก เปลี่ยน WACC 1% มูลค่าอาจเปลี่ยน 20-30%</li>
+      <li>อัตราส่วนราคาย้อนหลังใช้ได้ก็ต่อเมื่อลักษณะธุรกิจไม่เปลี่ยนไปจากเดิม</li>
+      <li>รายงานนี้ไม่ได้พิจารณาปัจจัยเชิงคุณภาพ เช่น คุณภาพผู้บริหาร
+          การแข่งขัน กฎระเบียบ หรือเหตุการณ์เฉพาะหน้า</li>
+      <li>ระบบไม่ทราบข้อมูลที่เกิดขึ้นหลังวันที่ดึงข้อมูลข้างต้น</li>
+    </ul>
+    <b>เอกสารนี้จัดทำเพื่อการศึกษาส่วนบุคคล ไม่ใช่คำแนะนำการลงทุน</b>
+    </div>""")
+
+    body = "".join(parts)
+    reg = (FONT_DIR / "Sarabun-Regular.ttf").as_uri()
+    bold_p = FONT_DIR / "Sarabun-Bold.ttf"
+    bold = bold_p.as_uri() if bold_p.exists() else reg
+    css = CSS.replace("FONT_REG", reg).replace("FONT_BOLD", bold)
+    return f"<!DOCTYPE html><html><head><meta charset='utf-8'>" \
+           f"<style>{css}</style></head><body>{body}</body></html>"
+
+
+def analyze_all(ticker, wacc=None, g1=None, rf=None, mos=None, refresh=False):
+    """
+    คำนวณทุกอย่างครั้งเดียว คืน (data, S, R, v, b)
+
+    แยกออกมาเป็นฟังก์ชันต่างหาก เพื่อให้หน้าเว็บ (Part 16) เรียกใช้ครั้งเดียว
+    แล้วเอาผลไปทั้งแสดงบนจอและสร้าง PDF ได้ ไม่ต้องคำนวณซ้ำสองรอบ
+    """
+    data = get_stock_data(ticker, force_refresh=refresh)
+    S = analyze(data)
+    R = compute_ratios(data)
+    v = value_stock(data, R, wacc=wacc, g1=g1, rf=rf)
+    b = build_bands(data, R, v, mos=mos)
+    return data, S, R, v, b
+
+
+def render_pdf(data, S, R, v, b, out_dir=None) -> Path:
+    """สร้างไฟล์ PDF จากผลที่คำนวณไว้แล้ว"""
+    setup_matplotlib_font()
+    html = build_html(data, S, R, v, b)
+    out = Path(out_dir) if out_dir else OUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d")
+    pdf_path = out / f"{data['ticker'].replace('.','_')}_{stamp}.pdf"
+    from weasyprint import HTML
+    HTML(string=html, base_url=str(BASE_DIR)).write_pdf(str(pdf_path))
+    return pdf_path
+
+
+def make_report(ticker, wacc=None, g1=None, rf=None, mos=None,
+                refresh=False, out_dir=None) -> Path:
+    setup_matplotlib_font()
+    data, S, R, v, b = analyze_all(ticker, wacc, g1, rf, mos, refresh)
+    return render_pdf(data, S, R, v, b, out_dir)
+
+
+# ---------------------------------------------------------------------------
+# รันจาก Terminal
+# ---------------------------------------------------------------------------
+
+def _weasyprint_help() -> str:
+    """
+    ข้อความช่วยเหลือเมื่อ WeasyPrint หาไลบรารีระบบไม่เจอ
+
+    สาเหตุที่พบบ่อยที่สุดบน Mac : ติดตั้ง pango ด้วย brew แล้ว แต่ Python
+    ที่มาจาก python.org ไม่รู้จักโฟลเดอร์ของ Homebrew (/opt/homebrew/lib)
+    จึงต้องบอกทางให้ด้วยตัวแปรระบบ DYLD_FALLBACK_LIBRARY_PATH
+    """
+    import platform
+    brew_lib = "/opt/homebrew/lib"          # Apple Silicon (M1-M5)
+    if platform.machine() != "arm64":
+        brew_lib = "/usr/local/lib"         # Mac รุ่น Intel
+    has_lib = Path(brew_lib).exists()
+
+    out = ["\n[ไม่สำเร็จ] WeasyPrint หาไลบรารีระบบไม่เจอ\n"]
+    if has_lib:
+        out.append("  ไลบรารีติดตั้งไว้แล้ว แต่ Python หาไม่เจอ")
+        out.append("  (Python จาก python.org ไม่รู้จักโฟลเดอร์ของ Homebrew)\n")
+        out.append("  แก้ทันที — พิมพ์ 2 บรรทัดนี้:")
+        out.append(f"    export DYLD_FALLBACK_LIBRARY_PATH={brew_lib}")
+        out.append("    python3 report.py <ticker>\n")
+        out.append("  แก้ถาวร — เพิ่มบรรทัดนี้ลงใน ~/.zshrc:")
+        out.append(f"    echo 'export DYLD_FALLBACK_LIBRARY_PATH={brew_lib}' >> ~/.zshrc")
+        out.append("    source ~/.zshrc\n")
+    else:
+        out.append("  ยังไม่ได้ติดตั้งไลบรารี — พิมพ์:")
+        out.append("    brew install pango gdk-pixbuf libffi")
+        out.append(f"    export DYLD_FALLBACK_LIBRARY_PATH={brew_lib}\n")
+    return "\n".join(out)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Part 15 — สร้างรายงาน PDF ภาษาไทย")
+    p.add_argument("ticker")
+    p.add_argument("--wacc", type=float)
+    p.add_argument("--g1", type=float)
+    p.add_argument("--rf", type=float, help="อัตราพันธบัตร (หุ้นไทยควรใส่ 0.025)")
+    p.add_argument("--mos", type=float, help="ส่วนเผื่อความปลอดภัย เช่น 0.30")
+    p.add_argument("--refresh", action="store_true")
+    p.add_argument("--open", action="store_true", help="เปิดไฟล์ทันทีเมื่อสร้างเสร็จ")
+    args = p.parse_args()
+
+    try:
+        path = make_report(args.ticker, wacc=args.wacc, g1=args.g1, rf=args.rf,
+                           mos=args.mos, refresh=args.refresh)
+    except FileNotFoundError as e:
+        print(f"\n[ไม่สำเร็จ] {e}\n", file=sys.stderr)
+        return 1
+    except (OSError, ImportError) as e:
+        msg = str(e).lower()
+        if "libgobject" in msg or "cannot load library" in msg or "pango" in msg:
+            print(_weasyprint_help(), file=sys.stderr)
+            return 1
+        print(f"\n[ไม่สำเร็จ] {type(e).__name__}: {e}\n", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"\n[ไม่สำเร็จ] {type(e).__name__}: {e}\n", file=sys.stderr)
+        return 1
+
+    size_kb = path.stat().st_size / 1024
+    print(f"\nสร้างรายงานเสร็จแล้ว")
+    print(f"  ไฟล์ : {path}")
+    print(f"  ขนาด : {size_kb:,.0f} KB\n")
+    if args.open:
+        subprocess.run(["open", str(path)], check=False)
+    else:
+        print(f"  เปิดดูด้วยคำสั่ง :  open \"{path}\"\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

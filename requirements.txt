@@ -1,0 +1,25 @@
+# Equity Research AI Pro — ไลบรารี Python ที่ต้องใช้
+# ติดตั้งด้วย:  pip install -r requirements.txt
+
+# --- Part 1: Data Layer ---
+yfinance>=0.2.60
+pandas>=2.2
+numpy>=2.0
+
+# --- Part 1b: SEC EDGAR ---
+# certifi = ชุดใบรับรองความปลอดภัย จำเป็นเพราะ Python บน macOS
+# ไม่ได้ต่อสายเข้ากับที่เก็บใบรับรองของระบบ (จะขึ้น CERTIFICATE_VERIFY_FAILED)
+certifi>=2024.0.0
+
+# --- Part 2-4: คำนวณ ---
+# (ใช้ pandas/numpy ที่มีอยู่แล้ว)
+
+# --- Part 8: Technical (ใช้ 'ta' ไม่ใช่ 'pandas-ta' เพราะ pandas-ta พังกับ numpy 2) ---
+ta>=0.11.0
+
+# --- Part 15: Report ---
+matplotlib>=3.9
+weasyprint>=62.0
+
+# --- Part 16: Web App ---
+streamlit>=1.40
