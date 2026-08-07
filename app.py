@@ -100,7 +100,9 @@ def apply_theme(name: str):
           color:#fff !important; font-size:1.4rem; font-weight:700; }}
   .zone * {{ color:#fff !important; }}
   .t {{ color:{c['txt']}; }}
-  .t th {{ background:{c['bg2']} !important; color:{c['txt']} !important; }}
+  /* ตรึงหัวตารางไว้ด้านบนเวลาเลื่อนลงดูรายการยาว ๆ */
+  .t thead th {{ background:{c['bg2']} !important; color:{c['txt']} !important;
+                position:sticky; top:0; z-index:2; }}
   .t td {{ border-bottom:1px solid {c['line']}; }}
   .t tbody tr:nth-child(even) {{ background:rgba(128,128,128,.10); }}
   .mc {{ border:1px solid {c['line']}; border-radius:.5rem; padding:.6rem .8rem; }}
@@ -177,10 +179,18 @@ def _cell(x, dec=2):
     return str(x)
 
 
-def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True):
-    """แสดง DataFrame เป็นตาราง HTML (เลื่อนซ้าย-ขวาได้บนมือถือ)"""
+def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
+               max_height=None):
+    """
+    แสดง DataFrame เป็นตาราง HTML
+
+    max_height : ถ้าใส่ (เช่น 520) ตารางจะสูงไม่เกินนั้นแล้ว **เลื่อนลงดูได้**
+                 พร้อมตรึงหัวตารางไว้ด้านบน — ใช้กับรายการหุ้นยาว ๆ
+    """
     cols = [str(c)[:4] if trim_year else str(c) for c in df.columns]
-    h = [f"<div class='tw'><table class='t'><thead><tr><th class='l'>{first_col}</th>"]
+    style = f" style='max-height:{max_height}px;overflow-y:auto'" if max_height else ""
+    h = [f"<div class='tw'{style}><table class='t'><thead><tr>"
+         f"<th class='l'>{first_col}</th>"]
     h += [f"<th>{c}</th>" for c in cols]
     h.append("</tr></thead><tbody>")
     for name in df.index:
@@ -311,9 +321,12 @@ if MODE.startswith("คัดกรอง"):
         else:
             cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "ROE (%)",
                     "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
-            show = res[[c for c in cols if c in res.columns]].head(60).copy()
-            show.index = range(1, len(show) + 1)
-            html_table(show.T, first_col="อันดับ", trim_year=False)
+            show = res[[c for c in cols if c in res.columns]].head(200).copy()
+            show.index = [str(i) for i in range(1, len(show) + 1)]
+            # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
+            html_table(show, first_col="อันดับ", trim_year=False, max_height=560)
+            st.caption(f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
+                       "· เลื่อนลงในตารางเพื่อดูตัวถัดไป · ดาวน์โหลด CSV เพื่อดูทั้งหมด")
             st.download_button("ดาวน์โหลดผลทั้งหมด (CSV)",
                                res.to_csv(index=False).encode("utf-8-sig"),
                                "ผลคัดกรอง.csv", "text/csv")
@@ -458,8 +471,8 @@ if MODE.startswith("วิเคราะห์ลึก"):
                     "ส่วนลด (%)", "โซน", "ความน่าเชื่อถือ", "คะแนน",
                     "ปีข้อมูล", "ROE เฉลี่ย (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
             show = under[[c for c in cols if c in under.columns]].copy()
-            show.index = range(1, len(show) + 1)
-            html_table(show.T, first_col="อันดับ", trim_year=False)
+            show.index = [str(i) for i in range(1, len(show) + 1)]
+            html_table(show, first_col="อันดับ", trim_year=False, max_height=520)
 
         bad = df[~df["ปัญหา"].eq("")]
         if not bad.empty:
