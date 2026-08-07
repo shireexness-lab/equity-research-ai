@@ -47,15 +47,77 @@ st.set_page_config(page_title="Equity Research AI Pro",
 ZONE_COLOR = {"Strong Buy": "#1b5e20", "Buy": "#2e7d32", "Hold": "#757575",
               "Reduce": "#ef6c00", "Sell": "#c62828"}
 
-st.markdown("""
+
+# ---------------------------------------------------------------------------
+# ปุ่มสลับธีม
+#
+# ทำไมต้องเขียน CSS เอง ไม่ใช้ของ Streamlit :
+#   Streamlit อ่านธีมจากไฟล์ config.toml ตอนเปิดแอป และมีปุ่มสลับซ่อนอยู่ในเมนู ⋮
+#   ซึ่งหายาก โดยเฉพาะบนมือถือ เราจึงกำหนดสีเองทั้งหมด
+#   เพื่อให้ปุ่มในหน้าเว็บเป็นตัวตัดสิน ไม่ว่าผู้ใช้จะตั้งค่าอะไรไว้ในเมนู
+# ---------------------------------------------------------------------------
+
+THEMES = {
+    "dark":  {"bg": "#0e1117", "bg2": "#1a1f2b", "txt": "#e8eaed",
+              "dim": "#9aa4b2", "line": "rgba(255,255,255,.14)", "pri": "#5b9bd5"},
+    "light": {"bg": "#ffffff", "bg2": "#f2f5f9", "txt": "#1a1a1a",
+              "dim": "#5f6b7a", "line": "rgba(0,0,0,.12)", "pri": "#1f4e79"},
+}
+
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "dark"
+
+
+def apply_theme(name: str):
+    """ฉีด CSS ตามธีมที่เลือก — ครอบทั้งพื้นหลัง ตัวหนังสือ ช่องกรอก และตาราง"""
+    c = THEMES[name]
+    st.markdown(f"""
 <style>
-  .block-container { padding-top:2rem; max-width:1200px; }
-  .zone { display:inline-block; padding:.4rem 1.4rem; border-radius:.5rem;
-          color:#fff; font-size:1.4rem; font-weight:700; }
-  .muted { color:#777; font-size:.85rem; }
-  [data-testid="stMetricValue"] { font-size:1.4rem; }
+  /* พื้นหลังหลักและแถบบน */
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
+      background-color:{c['bg']} !important; color:{c['txt']}; }}
+  [data-testid="stHeader"] {{ background-color:{c['bg']} !important; }}
+  [data-testid="stSidebar"] {{ background-color:{c['bg2']} !important; }}
+
+  /* ตัวหนังสือทั่วไป — ไม่ใส่ !important เพื่อให้สีเฉพาะจุดที่เรากำหนดเองยังชนะ */
+  h1,h2,h3,h4,h5,h6,p,li,label,summary,
+  [data-testid="stMarkdownContainer"],
+  [data-testid="stCaptionContainer"] {{ color:{c['txt']}; }}
+  [data-testid="stCaptionContainer"], .muted {{ color:{c['dim']}; }}
+
+  /* ช่องกรอกและช่องเลือก */
+  input, textarea, [data-baseweb="select"] > div,
+  [data-baseweb="popover"] li {{
+      background-color:{c['bg2']} !important; color:{c['txt']} !important; }}
+  [data-baseweb="popover"] div {{ background-color:{c['bg2']} !important; }}
+
+  /* แท็บ */
+  [data-testid="stTabs"] button p {{ color:{c['txt']}; }}
+
+  /* ส่วนประกอบที่เราสร้างเอง */
+  .block-container {{ padding-top:1.2rem; max-width:1200px; }}
+  .zone {{ display:inline-block; padding:.4rem 1.4rem; border-radius:.5rem;
+          color:#fff !important; font-size:1.4rem; font-weight:700; }}
+  .zone * {{ color:#fff !important; }}
+  .t {{ color:{c['txt']}; }}
+  .t th {{ background:{c['bg2']} !important; color:{c['txt']} !important; }}
+  .t td {{ border-bottom:1px solid {c['line']}; }}
+  .t tbody tr:nth-child(even) {{ background:rgba(128,128,128,.10); }}
+  .mc {{ border:1px solid {c['line']}; border-radius:.5rem; padding:.6rem .8rem; }}
+  .mc .k {{ color:{c['dim']}; font-size:.78rem; }}
+  .mc .v {{ color:{c['txt']}; font-size:1.3rem; font-weight:700; line-height:1.3; }}
+  .mc .d {{ font-size:.78rem; }}
+  .tw {{ overflow-x:auto; }}
 </style>
 """, unsafe_allow_html=True)
+
+
+def toggle_theme():
+    st.session_state["theme"] = "light" if st.session_state["theme"] == "dark" else "dark"
+
+
+apply_theme(st.session_state["theme"])
+DARK = st.session_state["theme"] == "dark"
 
 
 # ---------------------------------------------------------------------------
@@ -96,29 +158,15 @@ def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียง�
 #   ตาราง HTML ธรรมดาไม่มีปัญหานี้ และแสดงผลบนมือถือได้ดีกว่า
 # ---------------------------------------------------------------------------
 
-# หมายเหตุการออกแบบ CSS :
-#   ใช้ currentColor และ rgba แทนการระบุสีตายตัว
-#   เพื่อให้ตารางอ่านได้ทั้งธีมมืดและธีมสว่างโดยไม่ต้องเขียนสองชุด
-#   (currentColor = สีตัวหนังสือที่ Streamlit กำหนดให้ตามธีมที่ผู้ใช้เลือก)
-TABLE_CSS = """
+# โครงสร้างตาราง (ระยะห่าง/การจัดชิด) — ส่วนที่เป็น "สี" อยู่ใน apply_theme()
+st.markdown("""
 <style>
- .t { width:100%; border-collapse:collapse; font-size:.82rem; margin:.3rem 0 .9rem 0;
-      color:inherit; }
- .t th { background:rgba(128,150,180,.28); padding:.35rem .5rem; text-align:right;
-         font-weight:600; white-space:nowrap; color:inherit; }
+ .t { width:100%; border-collapse:collapse; font-size:.82rem; margin:.3rem 0 .9rem 0; }
+ .t th { padding:.35rem .5rem; text-align:right; font-weight:600; white-space:nowrap; }
  .t th.l, .t td.l { text-align:left; }
- .t td { padding:.3rem .5rem; text-align:right; white-space:nowrap;
-         border-bottom:1px solid rgba(128,128,128,.25); }
- .t tbody tr:nth-child(even) { background:rgba(128,128,128,.08); }
- .tw { overflow-x:auto; }
- .mc { border:1px solid rgba(128,128,128,.35); border-radius:.5rem;
-       padding:.6rem .8rem; }
- .mc .k { opacity:.7; font-size:.78rem; }
- .mc .v { font-size:1.3rem; font-weight:700; line-height:1.3; }
- .mc .d { font-size:.78rem; }
+ .t td { padding:.3rem .5rem; text-align:right; white-space:nowrap; }
 </style>
-"""
-st.markdown(TABLE_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 
 def _cell(x, dec=2):
@@ -164,9 +212,20 @@ def metric_card(col, label, value, delta=None, color=None):
 # หน้าเว็บ
 # ---------------------------------------------------------------------------
 
-st.title("📊 Equity Research AI Pro")
-st.caption("วิเคราะห์หุ้นจากงบการเงินจริง · หุ้นสหรัฐใช้ SEC EDGAR ย้อนหลัง 15 ปี · "
-           "หุ้นไทยใส่ .BK ต่อท้าย")
+tt1, tt2 = st.columns([5, 1])
+with tt1:
+    st.title("📊 Equity Research AI Pro")
+    st.caption("วิเคราะห์หุ้นจากงบการเงินจริง · หุ้นสหรัฐใช้ SEC EDGAR ย้อนหลัง 15 ปี · "
+               "หุ้นไทยใส่ .BK ต่อท้าย")
+with tt2:
+    st.write("")
+    st.button("☀️ ธีมสว่าง" if DARK else "🌙 ธีมมืด",
+              on_click=toggle_theme, use_container_width=True,
+              help="สลับระหว่างธีมมืดและธีมสว่าง กราฟจะเปลี่ยนสีตามอัตโนมัติ")
+
+MODE = st.radio("โหมด", ["วิเคราะห์รายตัว", "สแกนหาหุ้นราคาต่ำกว่ามูลค่า"],
+                horizontal=True, label_visibility="collapsed")
+
 
 @st.cache_data(show_spinner=False, ttl=24 * 3600)
 def ticker_options():
@@ -179,6 +238,92 @@ try:
     OPTIONS, LOOKUP = ticker_options()
 except Exception:
     OPTIONS, LOOKUP = [], {}
+
+# ---------------------------------------------------------------------------
+# โหมดสแกน
+# ---------------------------------------------------------------------------
+if MODE.startswith("สแกน"):
+    from screener import preset, scan, undervalued
+
+    st.info("**วิธีทำงาน** — ระบบจะวิเคราะห์หุ้นทีละตัวแบบเต็มรูปแบบ "
+            "แล้วเรียงลำดับตามส่วนลดจากมูลค่าที่ประเมินได้\n\n"
+            "⏱️ ใช้เวลาราว **30 วินาทีต่อหุ้น 1 ตัว** ในครั้งแรก "
+            "(ตัวที่เคยวิเคราะห์แล้วจะเร็วมาก) — แนะนำให้เริ่มที่ 10–15 ตัวก่อน")
+
+    s1, s2 = st.columns([3, 2])
+    with s1:
+        group = st.radio("ชุดหุ้น", ["หุ้นไทย", "หุ้นสหรัฐยอดนิยม", "เลือกเอง"],
+                         horizontal=True)
+    with s2:
+        n_max = st.slider("จำนวนสูงสุด", 3, 40, 10)
+
+    if group == "เลือกเอง":
+        picks = st.multiselect("เลือกหุ้นที่ต้องการสแกน", OPTIONS, max_selections=40)
+        scan_list = [LOOKUP.get(p, str(p).split(" ")[0]) for p in picks]
+    else:
+        scan_list = preset("thai" if group == "หุ้นไทย" else "us")[:n_max]
+        st.caption(f"จะสแกน : {', '.join(scan_list[:10])}"
+                   + (f" ... รวม {len(scan_list)} ตัว" if len(scan_list) > 10 else ""))
+
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        s_rf = st.number_input("อัตราพันธบัตร", 0.0, 0.15,
+                               0.025 if group == "หุ้นไทย" else 0.042, 0.005,
+                               format="%.3f")
+    with f2:
+        min_disc = st.slider("ส่วนลดขั้นต่ำ (%)", -50, 80, 0, 5)
+    with f3:
+        min_score = st.slider("คะแนนความน่าเชื่อถือขั้นต่ำ", 0, 100, 0, 5)
+
+    if st.button("เริ่มสแกน", type="primary", use_container_width=True):
+        if not scan_list:
+            st.warning("ยังไม่ได้เลือกหุ้น")
+            st.stop()
+        bar = st.progress(0.0)
+        note = st.empty()
+
+        def on_progress(i, total, t):
+            bar.progress((i - 1) / total)
+            note.caption(f"กำลังวิเคราะห์ {t} ... ({i}/{total})")
+
+        df = scan(scan_list, rf=s_rf or None, progress=on_progress)
+        bar.progress(1.0)
+        note.empty()
+        st.session_state["scan_df"] = df
+
+    df = st.session_state.get("scan_df")
+    if df is not None and not df.empty:
+        ok = df[df["ปัญหา"].eq("")]
+        under = undervalued(df, min_disc, min_score)
+        k = st.columns(3)
+        metric_card(k[0], "วิเคราะห์สำเร็จ", f"{len(ok)} / {len(df)}")
+        metric_card(k[1], "ราคาต่ำกว่ามูลค่า", f"{len(under)} ตัว")
+        best = under["ส่วนลด (%)"].max() if not under.empty else None
+        metric_card(k[2], "ส่วนลดสูงสุด",
+                    f"{best:,.0f}%" if best is not None else "—")
+
+        if under.empty:
+            st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ที่ตั้งไว้ — ลองลดส่วนลดขั้นต่ำลง")
+        else:
+            cols = ["ticker", "ชื่อบริษัท", "ราคา", "มูลค่าที่ประเมินได้",
+                    "ส่วนลด (%)", "โซน", "ความน่าเชื่อถือ", "คะแนน",
+                    "ปีข้อมูล", "ROE เฉลี่ย (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
+            show = under[[c for c in cols if c in under.columns]].copy()
+            show.index = range(1, len(show) + 1)
+            html_table(show.T, first_col="อันดับ", trim_year=False)
+
+        bad = df[~df["ปัญหา"].eq("")]
+        if not bad.empty:
+            with st.expander(f"วิเคราะห์ไม่สำเร็จ {len(bad)} ตัว"):
+                for _, r in bad.iterrows():
+                    st.caption(f"**{r['ticker']}** — {r['ปัญหา']}")
+
+        st.error("⚠️ **ส่วนลดมากไม่ได้แปลว่าหุ้นดี** — หุ้นที่ราคาต่ำกว่ามูลค่ามาก "
+                 "มักมีเหตุผลที่ตลาดให้ราคาต่ำ เช่น กำไรกำลังถดถอยหรือธุรกิจถูกแทนที่ "
+                 "ระบบนี้บอกได้แค่ว่า *ตัวเลขในอดีตกับราคาวันนี้ไม่ตรงกัน* ไม่ได้บอกว่าทำไม\n\n"
+                 "ให้เปิดวิเคราะห์รายตัวและอ่านรายงานฉบับเต็มก่อนตัดสินใจเสมอ")
+    st.stop()
+
 
 manual = st.toggle("พิมพ์ ticker เอง (สำหรับหุ้นที่ไม่มีในรายชื่อ)",
                    value=not OPTIONS,
@@ -223,15 +368,7 @@ with st.expander("ตั้งค่าขั้นสูง (ไม่กรอ
         mos = st.number_input("ส่วนเผื่อความปลอดภัย", 0.0, 0.60, 0.0, 0.05,
                               format="%.2f",
                               help="0 = ให้ระบบปรับตามความไม่แน่นอนอัตโนมัติ")
-    e1, e2 = st.columns(2)
-    with e1:
-        refresh = st.checkbox("ดึงข้อมูลใหม่ ไม่ใช้ที่เก็บไว้")
-    with e2:
-        light_charts = st.checkbox(
-            "กราฟสำหรับพื้นหลังสว่าง",
-            help="ค่าเริ่มต้นของแอปเป็นธีมมืด ถ้าสลับไปธีมสว่างที่ปุ่ม ⋮ "
-                 "มุมขวาบน → Settings → Appearance ให้ติ๊กช่องนี้ด้วย "
-                 "เพื่อให้สีกราฟอ่านง่ายขึ้น")
+    refresh = st.checkbox("ดึงข้อมูลใหม่ ไม่ใช้ที่เก็บไว้")
 
 if not go and "ran" not in st.session_state:
     st.info("พิมพ์ชื่อย่อหุ้นแล้วกด **วิเคราะห์** — ครั้งแรกของแต่ละตัวใช้เวลาราว 20–40 วินาที "
@@ -321,7 +458,7 @@ with d2:
 import report as RP
 RP.setup_matplotlib_font()
 # กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
-RP.set_chart_theme(dark=not light_charts)
+RP.set_chart_theme(dark=DARK)
 
 t1, t2, t3, t4, t5 = st.tabs(
     ["ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า", "ช่วงราคา"])
