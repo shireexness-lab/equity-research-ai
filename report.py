@@ -125,6 +125,8 @@ def chart_revenue_profit(R):
     yrs = [y[:4] for y in R["years"]]
     rev = R["raw"]["revenue"] / 1e9
     ni = R["raw"]["net_income"] / 1e9
+    if not (rev.notna().any() or ni.notna().any()):
+        return None
     # ใช้แท่งคู่เคียงกัน ไม่ใช่แท่งซ้อนทับ
     # เหตุผล : แท่งซ้อนทับทำให้คนอ่านเข้าใจผิดว่า "รายได้ + กำไร" ต้องบวกกัน
     #          ทั้งที่กำไรเป็นส่วนหนึ่งของรายได้อยู่แล้ว
@@ -139,36 +141,49 @@ def chart_revenue_profit(R):
     return _fig_b64(fig)
 
 
-def chart_margins(R):
+def _line_chart(R, series, title, ylabel="%"):
+    """
+    วาดกราฟเส้นหลายเส้น โดย **ข้ามเส้นที่ไม่มีข้อมูลเลย**
+
+    ทำไมสำคัญ : ธนาคารไม่มี Gross Profit / Operating Income
+    ถ้าวาดเส้นว่างเปล่า จะได้กราฟเปล่า ๆ ที่แกน Y เป็น -0.04 ถึง 0.04
+    ซึ่งดูเหมือนระบบพัง ทั้งที่ความจริงคือ "บริษัทประเภทนี้ไม่มีรายการนั้น"
+    """
     t, yrs = R["table"], [y[:4] for y in R["years"]]
+    plotted = 0
     fig, ax = plt.subplots(figsize=(7.2, 2.9))
-    for name, color in [("Gross Margin", C_MAIN), ("Operating Margin", C_ACCENT),
-                        ("Net Margin", C_GOOD)]:
-        if name in t.index:
-            ax.plot(yrs, t.loc[name].values, marker="o", ms=3, lw=1.6,
-                    color=color, label=name)
-    _style(ax, "อัตรากำไร (%)", "%")
+    for name, color in series:
+        if name not in t.index:
+            continue
+        vals = pd.to_numeric(t.loc[name], errors="coerce")
+        if not vals.notna().any():        # ทั้งแถวเป็นค่าว่าง → ข้าม
+            continue
+        ax.plot(yrs, vals.values, marker="o", ms=3, lw=1.6, color=color, label=name)
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        return None                        # ไม่มีอะไรให้วาด
+    _style(ax, title, ylabel)
     ax.legend(fontsize=8, frameon=False)
     plt.xticks(rotation=45 if len(yrs) > 8 else 0)
     return _fig_b64(fig)
+
+
+def chart_margins(R):
+    return _line_chart(R, [("Gross Margin", C_MAIN), ("Operating Margin", C_ACCENT),
+                           ("Net Margin", C_GOOD)], "อัตรากำไร (%)")
 
 
 def chart_returns(R):
-    t, yrs = R["table"], [y[:4] for y in R["years"]]
-    fig, ax = plt.subplots(figsize=(7.2, 2.9))
-    for name, color in [("ROE", C_MAIN), ("ROIC", C_ACCENT), ("ROA", C_GREY)]:
-        if name in t.index:
-            ax.plot(yrs, t.loc[name].values, marker="o", ms=3, lw=1.6,
-                    color=color, label=name)
-    _style(ax, "ผลตอบแทนต่อเงินทุน (%)", "%")
-    ax.legend(fontsize=8, frameon=False)
-    plt.xticks(rotation=45 if len(yrs) > 8 else 0)
-    return _fig_b64(fig)
+    return _line_chart(R, [("ROE", C_MAIN), ("ROIC", C_ACCENT), ("ROA", C_GREY)],
+                       "ผลตอบแทนต่อเงินทุน (%)")
 
 
 def chart_cashflow(R):
     yrs = [y[:4] for y in R["years"]]
     raw = R["raw"]
+    if not (raw["ocf"].notna().any() or raw["fcf"].notna().any()):
+        return None
     x = np.arange(len(yrs))
     fig, ax = plt.subplots(figsize=(7.2, 2.9))
     ax.bar(x - 0.2, raw["ocf"] / 1e9, width=0.4, color=C_MAIN, label="OCF")
