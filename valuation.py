@@ -392,6 +392,64 @@ def historical_multiple_value(data, R):
 
 
 # ---------------------------------------------------------------------------
+# 7b) P/BV — วิธีมาตรฐานสำหรับสถาบันการเงิน
+# ---------------------------------------------------------------------------
+
+def book_value_method(data, R):
+    """
+    ประเมินจากมูลค่าตามบัญชี (Book Value)
+
+    เหมาะกับใคร : ธนาคาร ประกัน และธุรกิจที่สินทรัพย์เป็นตัวเงินเกือบทั้งหมด
+    เพราะมูลค่าตามบัญชีใกล้เคียงมูลค่าที่ขายได้จริง (ต่างจากโรงงานหรือแบรนด์)
+
+    วิธี : ดู P/BV ที่ตลาดเคยให้หุ้นตัวนี้ย้อนหลัง แล้วคูณกับส่วนของผู้ถือหุ้นต่อหุ้นวันนี้
+    """
+    prices = data.get("prices")
+    if not isinstance(prices, pd.DataFrame) or prices.empty or "Close" not in prices:
+        return None
+    px = prices["Close"].dropna()
+    try:
+        idx = px.index.tz_localize(None)
+    except (TypeError, AttributeError):
+        idx = px.index
+    px = pd.Series(px.values, index=pd.DatetimeIndex(idx))
+
+    years = R["years"]
+    equity = R["raw"]["equity"]
+    shares_h = R["raw"]["shares_diluted"]
+
+    rows = []
+    for y in years:
+        try:
+            t = pd.Timestamp(y)
+        except Exception:
+            continue
+        win = px[px.index <= t]
+        e, s = equity.get(y), shares_h.get(y)
+        if win.empty or pd.isna(e) or pd.isna(s) or s == 0 or e <= 0:
+            continue
+        bvps = e / s
+        rows.append({"ปี": y[:4], "BVPS": bvps, "P/BV": float(win.iloc[-1]) / bvps})
+    if len(rows) < 3:
+        return None
+
+    hist = pd.DataFrame(rows).set_index("ปี")
+    med = hist["P/BV"].median()
+    med5 = hist["P/BV"].tail(5).median()
+    last = years[-1]
+    e_last, s_last = equity.get(last), shares_h.get(last)
+    bvps_now = (e_last / s_last) if pd.notna(e_last) and pd.notna(s_last) and s_last else None
+
+    return {
+        "ตาราง": hist,
+        "P/BV ค่ากลาง": med,
+        "P/BV ค่ากลาง 5 ปีล่าสุด": med5,
+        "BVPS ล่าสุด": bvps_now,
+        "มูลค่าจาก P/BV": (med * bvps_now) if bvps_now and pd.notna(med) else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 8) DDM
 # ---------------------------------------------------------------------------
 
@@ -415,6 +473,22 @@ def ddm(R, wacc, g2):
 # ฟังก์ชันรวม
 # ---------------------------------------------------------------------------
 
+def is_financial(data) -> bool:
+    """
+    ตรวจว่าเป็นธนาคารหรือสถาบันการเงินไหม
+
+    ทำไมต้องแยก : DCF บนฐานกระแสเงินสดอิสระ **ใช้กับสถาบันการเงินไม่ได้**
+    เพราะหนี้สินของธนาคาร (เงินฝาก) คือ "วัตถุดิบ" ในการทำธุรกิจ ไม่ใช่แหล่งเงินทุน
+    การหัก CapEx และคิด Net Debt จึงไม่มีความหมายทางเศรษฐศาสตร์
+    ตำราการเงินใช้ P/BV คู่กับ ROE หรือ DDM แทน
+    """
+    info = data.get("info", {})
+    sector = str(info.get("sector") or "").lower()
+    industry = str(info.get("industry") or "").lower()
+    keys = ("financial", "bank", "insurance", "capital markets", "credit")
+    return any(k in sector or k in industry for k in keys)
+
+
 def value_stock(data, R=None, wacc=None, g1=None, g2=DEFAULT_TERMINAL_G,
                 years1=DEFAULT_STAGE1_YEARS, rf=None) -> dict:
     """ประเมินมูลค่าด้วยทุกวิธี คืนผลรวมทั้งหมด"""
@@ -423,49 +497,90 @@ def value_stock(data, R=None, wacc=None, g1=None, g2=DEFAULT_TERMINAL_G,
     shares = get_shares_outstanding(data)
 
     w = estimate_wacc(data, R, rf=rf)
-    inp = estimate_inputs(data, R)
     wacc = float(wacc) if wacc is not None else w["wacc"]
-    g1 = float(g1) if g1 is not None else inp["g1 ที่ประมาณได้"]
-    fcf0 = inp["fcf0 (เฉลี่ย 3 ปี)"]
-    net_debt = inp["net_debt"]
 
-    base = dcf_2stage(fcf0, g1, years1, g2, wacc, shares, net_debt)
-    # 3 ฉาก : แย่ / กลาง / ดี
-    bear = dcf_2stage(fcf0, max(g1 - 0.04, -0.02), years1, g2, wacc + 0.01, shares, net_debt)
-    bull = dcf_2stage(fcf0, min(g1 + 0.04, MAX_G1 + 0.05), years1, g2,
-                      max(wacc - 0.01, g2 + MIN_WACC_GAP), shares, net_debt)
+    # --- ตัดสินใจว่าจะใช้ DCF ได้ไหม ---
+    notes = []
+    fin = is_financial(data)
+    try:
+        inp = estimate_inputs(data, R)
+        fcf_ok = inp["fcf0 (เฉลี่ย 3 ปี)"] > 0
+        if not fcf_ok:
+            notes.append("กระแสเงินสดอิสระเฉลี่ยติดลบ จึงทำ DCF ไม่ได้")
+    except ValueError as e:
+        inp, fcf_ok = None, False
+        notes.append(f"ทำ DCF ไม่ได้ : {e}")
 
-    # --- แยก "วิธีประเมิน" ออกจาก "ฉากจำลอง" ---
-    # ฉากแย่/ดี คือ DCF ตัวเดิมที่เปลี่ยนสมมติฐาน ไม่ใช่วิธีใหม่
-    # ถ้านับรวมในค่ากลาง = ให้น้ำหนัก DCF ถึง 3 เท่า ทำให้วิธีอื่นแทบไม่มีผล
-    methods = {
-        "DCF 2-Stage": base["มูลค่าต่อหุ้น"],
-        "EPV (ไม่โตเลย)": earnings_power_value(R, wacc, shares, net_debt),
-    }
+    if fin:
+        notes.append(
+            "หุ้นกลุ่มสถาบันการเงิน — ไม่ใช้ DCF บนฐานกระแสเงินสดอิสระ "
+            "เพราะเงินฝากคือวัตถุดิบของธุรกิจ ไม่ใช่แหล่งเงินทุน "
+            "การหัก CapEx และคิดหนี้สินสุทธิจึงไม่มีความหมาย "
+            "ระบบจะใช้ P/BV, P/E และเงินปันผลแทน")
+
+    use_dcf = fcf_ok and not fin
+
+    base = bear = bull = None
+    fcf0 = net_debt = None
+    methods = {}
+
+    if use_dcf:
+        g1 = float(g1) if g1 is not None else inp["g1 ที่ประมาณได้"]
+        fcf0 = inp["fcf0 (เฉลี่ย 3 ปี)"]
+        net_debt = inp["net_debt"]
+
+        base = dcf_2stage(fcf0, g1, years1, g2, wacc, shares, net_debt)
+        # 3 ฉาก : แย่ / กลาง / ดี
+        bear = dcf_2stage(fcf0, max(g1 - 0.04, -0.02), years1, g2,
+                          wacc + 0.01, shares, net_debt)
+        bull = dcf_2stage(fcf0, min(g1 + 0.04, MAX_G1 + 0.05), years1, g2,
+                          max(wacc - 0.01, g2 + MIN_WACC_GAP), shares, net_debt)
+
+        # --- แยก "วิธีประเมิน" ออกจาก "ฉากจำลอง" ---
+        # ฉากแย่/ดี คือ DCF ตัวเดิมที่เปลี่ยนสมมติฐาน ไม่ใช่วิธีใหม่
+        # ถ้านับรวมในค่ากลาง = ให้น้ำหนัก DCF ถึง 3 เท่า ทำให้วิธีอื่นแทบไม่มีผล
+        methods["DCF 2-Stage"] = base["มูลค่าต่อหุ้น"]
+        methods["EPV (ไม่โตเลย)"] = earnings_power_value(R, wacc, shares, net_debt)
+    else:
+        g1 = float(g1) if g1 is not None else None
     hist = historical_multiple_value(data, R)
     if hist:
         # แสดงทั้ง 2 ยุค เพราะตลาดอาจเปลี่ยนมุมมองต่อหุ้นตัวนี้ไปถาวร
         methods["P/E ค่ากลางทั้งช่วง"] = hist["มูลค่าจาก P/E"]
         methods["P/E ค่ากลาง 5 ปีล่าสุด"] = hist["มูลค่าจาก P/E 5 ปี"]
-        methods["P/FCF ค่ากลางทั้งช่วง"] = hist["มูลค่าจาก P/FCF"]
-        methods["P/FCF ค่ากลาง 5 ปีล่าสุด"] = hist["มูลค่าจาก P/FCF 5 ปี"]
+        if use_dcf:      # P/FCF ไม่มีความหมายถ้าคำนวณ FCF ไม่ได้
+            methods["P/FCF ค่ากลางทั้งช่วง"] = hist["มูลค่าจาก P/FCF"]
+            methods["P/FCF ค่ากลาง 5 ปีล่าสุด"] = hist["มูลค่าจาก P/FCF 5 ปี"]
+
+    # P/BV — วิธีมาตรฐานสำหรับสถาบันการเงิน
+    # เหตุผล : ธนาคารมีสินทรัพย์เป็นตัวเงินเกือบทั้งหมด มูลค่าตามบัญชีจึงใกล้เคียงมูลค่าจริง
+    pbv = book_value_method(data, R)
+    if pbv:
+        methods["P/BV ค่ากลางย้อนหลัง"] = pbv["มูลค่าจาก P/BV"]
 
     # DDM ใช้ได้เฉพาะหุ้นที่จ่ายปันผลเป็นเนื้อเป็นหนัง
     # หุ้นที่จ่ายปันผลน้อย (เช่น Apple จ่าย ~15% ของกำไร) DDM จะให้ค่าต่ำเตี้ยจนไร้ความหมาย
     payout = R["table"].loc["Payout Ratio"].tail(3).mean() if "Payout Ratio" in R["table"].index else np.nan
     d = ddm(R, wacc, g2)
-    ddm_used = bool(d and pd.notna(payout) and payout >= 30)
+    # ถ้าใช้ DCF ไม่ได้ DDM กลายเป็นวิธีหลัก จึงลดเกณฑ์ลงเหลือ 20%
+    threshold = 30 if use_dcf else 20
+    ddm_used = bool(d and pd.notna(payout) and payout >= threshold)
     if d:
         label = "DDM (ปันผล)" if ddm_used else "DDM (ปันผล) — ไม่นับ: จ่ายปันผลน้อย"
         methods[label] = d
 
-    scenarios = {
-        "ฉากแย่ (g1 −4%, WACC +1%)": bear["มูลค่าต่อหุ้น"],
-        "ฉากกลาง": base["มูลค่าต่อหุ้น"],
-        "ฉากดี (g1 +4%, WACC −1%)": bull["มูลค่าต่อหุ้น"],
-    }
+    scenarios = {}
+    if use_dcf:
+        scenarios = {
+            "ฉากแย่ (g1 −4%, WACC +1%)": bear["มูลค่าต่อหุ้น"],
+            "ฉากกลาง": base["มูลค่าต่อหุ้น"],
+            "ฉากดี (g1 +4%, WACC −1%)": bull["มูลค่าต่อหุ้น"],
+        }
 
-    implied_g = reverse_dcf(price, fcf0, years1, g2, wacc, shares, net_debt) if price else None
+    implied_g = (reverse_dcf(price, fcf0, years1, g2, wacc, shares, net_debt)
+                 if (use_dcf and price) else None)
+    sens = (sensitivity(fcf0, years1, g2, shares, net_debt, wacc, g1)
+            if use_dcf else None)
 
     valid = [v for k, v in methods.items()
              if v is not None and np.isfinite(v) and v > 0 and "ไม่นับ" not in k]
@@ -485,8 +600,12 @@ def value_stock(data, R=None, wacc=None, g1=None, g2=DEFAULT_TERMINAL_G,
         "fair_value (ค่ากลางทุกวิธี)": fair,
         "ส่วนต่างจากราคา (%)": ((fair / price - 1) * 100) if fair and price else None,
         "อัตราโตที่ตลาดคาดหวัง": implied_g,
-        "sensitivity": sensitivity(fcf0, years1, g2, shares, net_debt, wacc, g1),
+        "sensitivity": sens,
         "historical": hist,
+        "book_value": pbv,
+        "ใช้ DCF ได้ไหม": use_dcf,
+        "เป็นสถาบันการเงิน": fin,
+        "หมายเหตุวิธีประเมิน": notes,
         "ปีข้อมูล": len(R["years"]),
         "แหล่งงบ": data.get("statements_source", "yfinance"),
     }
@@ -495,6 +614,36 @@ def value_stock(data, R=None, wacc=None, g1=None, g2=DEFAULT_TERMINAL_G,
 # ---------------------------------------------------------------------------
 # แสดงผล
 # ---------------------------------------------------------------------------
+
+def _print_methods_only(v: dict) -> None:
+    """แสดงผลแบบย่อ สำหรับหุ้นที่ทำ DCF ไม่ได้ (ธนาคาร หรือ FCF ติดลบ)"""
+    cur, price, W = v["สกุลเงิน"], v["ราคาปัจจุบัน"], 74
+    print("\n  มูลค่าต่อหุ้นจากแต่ละวิธี (ใช้หาค่ากลาง)")
+    print("  " + "-" * (W - 4))
+    for k, val in v["methods"].items():
+        if val is None or not np.isfinite(val):
+            print(f"  {k:<34}{'คำนวณไม่ได้':>12}")
+            continue
+        gap = (val / price - 1) * 100 if price else np.nan
+        print(f"  {k:<34}{val:>12,.2f} {cur}  ({gap:+.0f}%)")
+    print("  " + "-" * (W - 4))
+    fair = v["fair_value (ค่ากลางทุกวิธี)"]
+    print(f"  {'ราคาตลาดวันนี้':<34}{price:>12,.2f} {cur}")
+    if fair:
+        print(f"  {'มูลค่าที่ประเมินได้ (ค่ากลาง)':<34}{fair:>12,.2f} {cur}")
+        print(f"  {'ส่วนต่าง':<34}{v['ส่วนต่างจากราคา (%)']:>12,.1f} %")
+    else:
+        print("  ประเมินมูลค่าไม่ได้เลย — ไม่มีวิธีใดใช้ได้กับหุ้นตัวนี้")
+
+    bv = v.get("book_value")
+    if bv:
+        print(f"\n  P/BV ย้อนหลัง : ค่ากลาง {bv['P/BV ค่ากลาง']:.2f} เท่า"
+              f" | 5 ปีล่าสุด {bv['P/BV ค่ากลาง 5 ปีล่าสุด']:.2f} เท่า"
+              f" | มูลค่าตามบัญชีต่อหุ้นล่าสุด {bv['BVPS ล่าสุด']:,.2f} {cur}")
+    print("\n" + "=" * W)
+    print("  เอกสารนี้สร้างโดยระบบอัตโนมัติเพื่อการศึกษา ไม่ใช่คำแนะนำการลงทุน")
+    print("=" * W)
+
 
 def print_report(v: dict) -> None:
     cur = v["สกุลเงิน"]
@@ -515,6 +664,16 @@ def print_report(v: dict) -> None:
     print(f"  {'อัตราภาษี':<26}{w['อัตราภาษี']:>11.2%}")
     print(f"  {'น้ำหนัก ทุน / หนี้':<26}{w['น้ำหนักส่วนทุน']:>6.0%} /{w['น้ำหนักหนี้']:>5.0%}")
     print(f"  {'>> WACC ที่ใช้':<26}{v['wacc ที่ใช้']:>11.2%}")
+
+    if v.get("หมายเหตุวิธีประเมิน"):
+        print("\n  หมายเหตุวิธีประเมิน")
+        print("  " + "-" * (W - 4))
+        for n in v["หมายเหตุวิธีประเมิน"]:
+            print(f"  ⚠️ {n}")
+
+    if not v.get("ใช้ DCF ได้ไหม"):
+        _print_methods_only(v)
+        return
 
     i = v["inputs"]
     print("\n  สมมติฐานตั้งต้น")

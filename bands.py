@@ -90,7 +90,8 @@ def reliability(v: dict, m: dict) -> dict:
     """
     spread = m.get("ความต่างระหว่างวิธี (เท่า)", 1.0)
     years = v.get("ปีข้อมูล", 0)
-    tv_share = v.get("base_dcf", {}).get("สัดส่วนมูลค่าสุดท้าย", np.nan)
+    base = v.get("base_dcf") or {}       # เป็น None ได้ถ้าใช้ DCF ไม่ได้ (ธนาคาร ฯลฯ)
+    tv_share = base.get("สัดส่วนมูลค่าสุดท้าย", np.nan)
 
     warns = []
     score = 100
@@ -109,6 +110,10 @@ def reliability(v: dict, m: dict) -> dict:
     if pd.notna(tv_share) and tv_share > 0.75:
         score -= 15
         warns.append(f"มูลค่า {tv_share:.0%} มาจากปีที่ 11 เป็นต้นไป ซึ่งเดายากที่สุด")
+    if not v.get("ใช้ DCF ได้ไหม", True):
+        score -= 15
+        warns.append("ประเมินไม่ได้ด้วย DCF จึงพึ่งอัตราส่วนราคาย้อนหลังเป็นหลัก "
+                     "ซึ่งสะท้อน 'ตลาดเคยให้ราคาเท่าไร' ไม่ใช่ 'กิจการมีมูลค่าเท่าไร'")
 
     score = max(score, 0)
     level = "สูง" if score >= 75 else ("ปานกลาง" if score >= 50 else "ต่ำ")

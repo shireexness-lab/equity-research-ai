@@ -171,6 +171,10 @@ if rel["คำเตือน"]:
     box("**ข้อจำกัดของการประเมินครั้งนี้**\n\n"
         + "\n".join(f"- {x}" for x in rel["คำเตือน"]))
 
+if v.get("หมายเหตุวิธีประเมิน"):
+    st.warning("**หมายเหตุวิธีประเมิน**\n\n"
+               + "\n".join(f"- {n}" for n in v["หมายเหตุวิธีประเมิน"]))
+
 ig = v.get("อัตราโตที่ตลาดคาดหวัง")
 if ig is not None:
     g_hist = R["summary"].get("CAGR FCF (%)")
@@ -252,20 +256,37 @@ with t4:
                               f"{w['อัตราภาษี']:.2%}", f"{v['wacc ที่ใช้']:.2%}"]},
                      hide_index=True, use_container_width=True)
     with q2:
-        i = v["inputs"]
         st.markdown("**สมมติฐาน DCF**")
-        st.dataframe({"รายการ": ["FCF ปีฐาน (ล้าน)", "อัตราโต g1", "อัตราโตถาวร g2",
-                                 "ปีช่วงโตสูง", "สัดส่วนมูลค่าสุดท้าย"],
-                      "ค่า": [f"{i['fcf0 (เฉลี่ย 3 ปี)']/1e6:,.0f}",
-                              f"{v['g1 ที่ใช้']:.2%}", f"{v['g2 ที่ใช้']:.2%}",
-                              f"{v['years1']} ปี",
-                              f"{v['base_dcf']['สัดส่วนมูลค่าสุดท้าย']:.0%}"]},
-                     hide_index=True, use_container_width=True)
+        if v.get("ใช้ DCF ได้ไหม"):
+            i = v["inputs"]
+            st.dataframe({"รายการ": ["FCF ปีฐาน (ล้าน)", "อัตราโต g1", "อัตราโตถาวร g2",
+                                     "ปีช่วงโตสูง", "สัดส่วนมูลค่าสุดท้าย"],
+                          "ค่า": [f"{i['fcf0 (เฉลี่ย 3 ปี)']/1e6:,.0f}",
+                                  f"{v['g1 ที่ใช้']:.2%}", f"{v['g2 ที่ใช้']:.2%}",
+                                  f"{v['years1']} ปี",
+                                  f"{v['base_dcf']['สัดส่วนมูลค่าสุดท้าย']:.0%}"]},
+                         hide_index=True, use_container_width=True)
+        else:
+            st.caption("ไม่ได้ใช้ DCF กับหุ้นตัวนี้ — ดูเหตุผลด้านบน")
+
     show_chart(RP.chart_methods(v))
-    st.markdown("**ตารางความไว (Sensitivity)** — แถว = WACC, คอลัมน์ = g1")
-    st.dataframe(v["sensitivity"].round(0), use_container_width=True)
-    st.caption("ถ้าตัวเลขในตารางกระจายกว้างมาก แปลว่าอย่าเชื่อมูลค่าตัวเดียว "
-               "ให้ใช้เป็นช่วงแทน")
+
+    if v.get("sensitivity") is not None:
+        st.markdown("**ตารางความไว (Sensitivity)** — แถว = WACC, คอลัมน์ = g1")
+        st.dataframe(v["sensitivity"].round(0), use_container_width=True)
+        st.caption("ถ้าตัวเลขในตารางกระจายกว้างมาก แปลว่าอย่าเชื่อมูลค่าตัวเดียว "
+                   "ให้ใช้เป็นช่วงแทน")
+
+    bv = v.get("book_value")
+    if bv:
+        st.markdown("**มูลค่าตามบัญชี (P/BV)**")
+        st.dataframe({"รายการ": ["P/BV ค่ากลางทั้งช่วง", "P/BV ค่ากลาง 5 ปีล่าสุด",
+                                 "มูลค่าตามบัญชีต่อหุ้นล่าสุด"],
+                      "ค่า": [f"{bv['P/BV ค่ากลาง']:.2f} เท่า",
+                              f"{bv['P/BV ค่ากลาง 5 ปีล่าสุด']:.2f} เท่า",
+                              f"{bv['BVPS ล่าสุด']:,.2f} {cur}"]},
+                     hide_index=True, use_container_width=True)
+
     if v.get("historical"):
         show_chart(RP.chart_pe_history(v))
 

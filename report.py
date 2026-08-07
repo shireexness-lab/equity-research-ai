@@ -456,6 +456,9 @@ def build_html(data, S, R, v, b) -> str:
 
     # ---------- ประเมินมูลค่า ----------
     parts.append("<h2>5. การประเมินมูลค่า</h2>")
+    if v.get("หมายเหตุวิธีประเมิน"):
+        li = "".join(f"<li>{esc(n)}</li>" for n in v["หมายเหตุวิธีประเมิน"])
+        parts.append(f"<div class='warn'><b>หมายเหตุวิธีประเมิน</b><ul>{li}</ul></div>")
     w = v["wacc_detail"]
     i = v["inputs"]
     parts.append("<div class='two'><div><h3>อัตราคิดลด (WACC)</h3>")
@@ -469,26 +472,40 @@ def build_html(data, S, R, v, b) -> str:
         ("WACC ที่ใช้", f"{v['wacc ที่ใช้']:.2%}"),
     ]))
     parts.append("</div><div><h3>สมมติฐาน DCF</h3>")
-    parts.append(kv_html([
-        ("FCF ปีฐาน (เฉลี่ย 3 ปี)", f"{i['fcf0 (เฉลี่ย 3 ปี)']/1e6:,.0f} ล้าน"),
-        ("อัตราโตช่วงแรก (g1)", f"{v['g1 ที่ใช้']:.2%}"),
-        ("อัตราโตถาวร (g2)", f"{v['g2 ที่ใช้']:.2%}"),
-        ("จำนวนปีช่วงโตสูง", f"{v['years1']} ปี"),
-        ("หนี้สินสุทธิ", f"{i['net_debt']/1e6:,.0f} ล้าน"),
-        ("สัดส่วนมูลค่าสุดท้าย", f"{v['base_dcf']['สัดส่วนมูลค่าสุดท้าย']:.0%}"),
-    ]))
+    if v.get("ใช้ DCF ได้ไหม"):
+        parts.append(kv_html([
+            ("FCF ปีฐาน (เฉลี่ย 3 ปี)", f"{i['fcf0 (เฉลี่ย 3 ปี)']/1e6:,.0f} ล้าน"),
+            ("อัตราโตช่วงแรก (g1)", f"{v['g1 ที่ใช้']:.2%}"),
+            ("อัตราโตถาวร (g2)", f"{v['g2 ที่ใช้']:.2%}"),
+            ("จำนวนปีช่วงโตสูง", f"{v['years1']} ปี"),
+            ("หนี้สินสุทธิ", f"{i['net_debt']/1e6:,.0f} ล้าน"),
+            ("สัดส่วนมูลค่าสุดท้าย", f"{v['base_dcf']['สัดส่วนมูลค่าสุดท้าย']:.0%}"),
+        ]))
+    else:
+        parts.append("<p class='sub'>ไม่ได้ใช้ DCF กับหุ้นตัวนี้ "
+                     "(ดูเหตุผลในกล่องหมายเหตุด้านบน)</p>")
     parts.append("</div></div>")
 
-    if v["base_dcf"]["สัดส่วนมูลค่าสุดท้าย"] > 0.75:
+    if v.get("ใช้ DCF ได้ไหม") and v["base_dcf"]["สัดส่วนมูลค่าสุดท้าย"] > 0.75:
         parts.append("""<div class='warn'>มูลค่าเกิน 75% มาจากช่วง
         "ปีที่ 11 เป็นต้นไป" ซึ่งเป็นช่วงที่คาดการณ์ได้ยากที่สุด
         ผลลัพธ์จึงไวต่อสมมติฐานมาก ควรอ่านคู่กับตารางความไวเสมอ</div>""")
 
     parts.append(img(chart_methods(v)))
-    parts.append("<h3>ตารางความไว (Sensitivity)</h3>")
-    parts.append(table_html(v["sensitivity"], first_col="WACC \\ g1", dec=0))
-    parts.append("""<div class='note'>อ่านตารางนี้อย่างไร : ถ้าตัวเลขกระจายกว้างมาก
-    แปลว่าอย่าเชื่อ "มูลค่าตัวเดียว" ให้ใช้เป็นช่วงแทน</div>""")
+    if v.get("sensitivity") is not None:
+        parts.append("<h3>ตารางความไว (Sensitivity)</h3>")
+        parts.append(table_html(v["sensitivity"], first_col="WACC \\ g1", dec=0))
+        parts.append("""<div class='note'>อ่านตารางนี้อย่างไร : ถ้าตัวเลขกระจายกว้างมาก
+        แปลว่าอย่าเชื่อ "มูลค่าตัวเดียว" ให้ใช้เป็นช่วงแทน</div>""")
+
+    bv = v.get("book_value")
+    if bv:
+        parts.append("<h3>มูลค่าตามบัญชี (P/BV)</h3>")
+        parts.append(kv_html([
+            ("P/BV ค่ากลางทั้งช่วง", f"{fmt(bv['P/BV ค่ากลาง'])} เท่า"),
+            ("P/BV ค่ากลาง 5 ปีล่าสุด", f"{fmt(bv['P/BV ค่ากลาง 5 ปีล่าสุด'])} เท่า"),
+            ("มูลค่าตามบัญชีต่อหุ้นล่าสุด", f"{fmt(bv['BVPS ล่าสุด'])} {cur}"),
+        ]))
     parts.append("<div class='pagebreak'></div>")
 
     # ---------- Multiple ย้อนหลัง ----------
