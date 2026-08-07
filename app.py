@@ -223,7 +223,9 @@ with tt2:
               on_click=toggle_theme, use_container_width=True,
               help="สลับระหว่างธีมมืดและธีมสว่าง กราฟจะเปลี่ยนสีตามอัตโนมัติ")
 
-MODE = st.radio("โหมด", ["วิเคราะห์รายตัว", "สแกนหาหุ้นราคาต่ำกว่ามูลค่า"],
+MODE = st.radio("โหมด",
+                ["วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
+                 "เปรียบเทียบ 2–10 ตัว"],
                 horizontal=True, label_visibility="collapsed")
 
 
@@ -240,9 +242,156 @@ except Exception:
     OPTIONS, LOOKUP = [], {}
 
 # ---------------------------------------------------------------------------
-# โหมดสแกน
+# โหมดคัดกรองทั้งตลาด (ชั้นที่ 1 — เร็ว)
 # ---------------------------------------------------------------------------
-if MODE.startswith("สแกน"):
+if MODE.startswith("คัดกรอง"):
+    from screener import preset, quick_filter, quick_screen
+
+    st.info("**ชั้นคัดกรองเร็ว** — ดึงเฉพาะตัวเลขสรุป (P/E, P/BV, ROE) "
+            "ไม่ทำ DCF จึงเร็วกว่าราว 20 เท่า ใช้ได้กับทั้งตลาด\n\n"
+            "หลังคัดได้แล้ว ให้เอารายชื่อไปวิเคราะห์ลึกในโหมดถัดไป")
+
+    q1, q2 = st.columns([2, 1])
+    with q1:
+        uni = st.radio("ตลาด", ["หุ้นไทย", "หุ้นสหรัฐยอดนิยม",
+                                "หุ้นสหรัฐทั้งตลาด", "ไทย + สหรัฐทั้งตลาด"],
+                       horizontal=True)
+    key = {"หุ้นไทย": "thai", "หุ้นสหรัฐยอดนิยม": "us",
+           "หุ้นสหรัฐทั้งตลาด": "us-all", "ไทย + สหรัฐทั้งตลาด": "all"}[uni]
+    full = preset(key)
+    with q2:
+        cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, len(full),
+                              min(300, len(full)), 50)
+    universe = full[:cap] if cap else full
+
+    mins = len(universe) * 1.5 / 8 / 60
+    if len(universe) > 400:
+        st.warning(f"เลือกมา **{len(universe):,} ตัว** — คาดว่าใช้เวลาราว "
+                   f"**{mins:.0f} นาที** และอาจเกินหน่วยความจำของเซิร์ฟเวอร์ฟรี (1 GB)\n\n"
+                   f"แนะนำให้รันบน MacBook แทน แล้วค่อยดูผลจากไฟล์ CSV:\n\n"
+                   f"```\npython3 screener.py --quick --list {key} --csv ผลคัดกรอง.csv\n```")
+    else:
+        st.caption(f"จะคัดกรอง {len(universe):,} ตัว — คาดว่าราว {mins:.1f} นาที")
+
+    st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
+    g = st.columns(6)
+    f_pe = g[0].number_input("P/E ไม่เกิน", 0.0, 200.0, 0.0, 1.0)
+    f_pbv = g[1].number_input("P/BV ไม่เกิน", 0.0, 50.0, 0.0, 0.5)
+    f_roe = g[2].number_input("ROE ขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0)
+    f_fcf = g[3].number_input("FCF Yield ขั้นต่ำ (%)", 0.0, 50.0, 0.0, 0.5)
+    f_div = g[4].number_input("ปันผลขั้นต่ำ (%)", 0.0, 20.0, 0.0, 0.5)
+    f_cap = g[5].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
+
+    if st.button("เริ่มคัดกรอง", type="primary", use_container_width=True):
+        bar, note = st.progress(0.0), st.empty()
+
+        def on_q(i, total, t):
+            bar.progress(min(i / total, 1.0))
+            if i % 20 == 0 or i == total:
+                note.caption(f"ดึงข้อมูลแล้ว {i:,}/{total:,}")
+
+        st.session_state["quick_df"] = quick_screen(universe, progress=on_q)
+        note.empty()
+
+    qdf = st.session_state.get("quick_df")
+    if qdf is not None and not qdf.empty:
+        got = qdf[qdf["ปัญหา"].eq("")]
+        res = quick_filter(qdf, max_pe=f_pe or None, max_pbv=f_pbv or None,
+                           min_roe=f_roe or None, min_fcf_yield=f_fcf or None,
+                           min_div=f_div or None, min_mcap=f_cap or None)
+        res = res.sort_values("P/E", na_position="last")
+        k = st.columns(3)
+        metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}")
+        metric_card(k[1], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
+        metric_card(k[2], "P/E ต่ำสุดที่ผ่าน",
+                    f"{res['P/E'].min():,.1f}" if len(res) else "—")
+
+        if res.empty:
+            st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
+        else:
+            cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "ROE (%)",
+                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
+            show = res[[c for c in cols if c in res.columns]].head(60).copy()
+            show.index = range(1, len(show) + 1)
+            html_table(show.T, first_col="อันดับ", trim_year=False)
+            st.download_button("ดาวน์โหลดผลทั้งหมด (CSV)",
+                               res.to_csv(index=False).encode("utf-8-sig"),
+                               "ผลคัดกรอง.csv", "text/csv")
+            st.success("**ขั้นต่อไป** — คัดรายชื่อข้างบนราว 10–20 ตัว "
+                       "แล้วไปที่โหมด **วิเคราะห์ลึกหลายตัว** เพื่อประเมินมูลค่าจริง")
+
+        st.error("⚠️ **ชั้นนี้ยังไม่ได้ประเมินมูลค่า** — P/E ต่ำไม่ได้แปลว่าถูก "
+                 "อาจเป็นเพราะกำไรปีล่าสุดสูงผิดปกติ หรือธุรกิจกำลังถดถอย\n\n"
+                 "ตัวเลขทั้งหมดในตารางนี้มาจาก yfinance ซึ่งคำนวณจากงบ 12 เดือนล่าสุด "
+                 "ไม่ได้ผ่านการตรวจสอบเหมือนชั้นวิเคราะห์ลึก")
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
+# โหมดเปรียบเทียบ 2–10 ตัว
+# ---------------------------------------------------------------------------
+if MODE.startswith("เปรียบเทียบ"):
+    from screener import MAX_COMPARE, MIN_COMPARE, compare
+
+    st.info(f"เลือกหุ้น {MIN_COMPARE}–{MAX_COMPARE} ตัว "
+            "ระบบจะวิเคราะห์ลึกทุกตัวแล้ววางเทียบกันให้เห็นชัด ๆ\n\n"
+            "⏱️ ราว 30 วินาทีต่อตัว")
+
+    picks = st.multiselect("เลือกหุ้นที่จะเปรียบเทียบ", OPTIONS,
+                           max_selections=MAX_COMPARE,
+                           placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท")
+    cmp_list = [LOOKUP.get(p, str(p).split(" ")[0]) for p in picks]
+
+    extra = st.text_input("หรือพิมพ์เพิ่มเอง (คั่นด้วยเว้นวรรค)",
+                          placeholder="เช่น AAPL MSFT PTT.BK")
+    cmp_list += [x.strip().upper() for x in extra.split() if x.strip()]
+    cmp_list = list(dict.fromkeys(cmp_list))[:MAX_COMPARE]
+
+    c_rf = st.number_input("อัตราพันธบัตร (หุ้นไทยใส่ 0.025)", 0.0, 0.15, 0.0, 0.005,
+                           format="%.3f")
+
+    if cmp_list:
+        st.caption(f"จะเปรียบเทียบ {len(cmp_list)} ตัว : {', '.join(cmp_list)}")
+
+    if st.button("เปรียบเทียบ", type="primary", use_container_width=True,
+                 disabled=len(cmp_list) < MIN_COMPARE):
+        bar, note = st.progress(0.0), st.empty()
+
+        def on_c(i, total, t):
+            bar.progress((i - 1) / total)
+            note.caption(f"กำลังวิเคราะห์ {t} ... ({i}/{total})")
+
+        try:
+            st.session_state["cmp"] = compare(cmp_list, rf=c_rf or None, progress=on_c)
+        except ValueError as e:
+            st.error(str(e))
+        bar.progress(1.0)
+        note.empty()
+
+    res = st.session_state.get("cmp")
+    if res and not res["table"].empty:
+        w = res.get("winner")
+        if w:
+            st.success(f"**ตัวเลขน่าสนใจที่สุด : {w['ticker']}** — "
+                       f"ส่วนลด {w['ส่วนลด (%)']:.0f}% · "
+                       f"ความน่าเชื่อถือ {w['ความน่าเชื่อถือ']}  \n"
+                       "จัดอันดับโดยให้น้ำหนัก *ส่วนลด* กับ *ความน่าเชื่อถือ* **เท่ากัน** — "
+                       "เป็นการจัดอันดับตัวเลข ไม่ใช่คำแนะนำให้ซื้อ")
+        html_table(res["table"], first_col="หัวข้อ", trim_year=False)
+        for tk, err in res["errors"]:
+            st.caption(f"⚠️ {tk} — {err}")
+        st.download_button("ดาวน์โหลดผลเปรียบเทียบ (CSV)",
+                           res["raw"].to_csv(index=False).encode("utf-8-sig"),
+                           "เปรียบเทียบหุ้น.csv", "text/csv")
+    elif len(cmp_list) < MIN_COMPARE:
+        st.caption(f"เลือกอย่างน้อย {MIN_COMPARE} ตัวจึงจะเปรียบเทียบได้")
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
+# โหมดวิเคราะห์ลึกหลายตัว (ชั้นที่ 2)
+# ---------------------------------------------------------------------------
+if MODE.startswith("วิเคราะห์ลึก"):
     from screener import preset, scan, undervalued
 
     st.info("**วิธีทำงาน** — ระบบจะวิเคราะห์หุ้นทีละตัวแบบเต็มรูปแบบ "

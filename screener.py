@@ -36,6 +36,123 @@ import pandas as pd
 ZONE_ORDER = ["Strong Buy", "Buy", "Hold", "Reduce", "Sell"]
 
 
+# ===========================================================================
+# ชั้นที่ 1 — คัดกรองเร็ว (ใช้ได้กับทั้งตลาด)
+#
+# ดึงเฉพาะ "ตัวเลขสรุป" ที่ yfinance เตรียมไว้ให้แล้ว (P/E, P/BV, ROE ฯลฯ)
+# ไม่ดึงงบย้อนหลัง ไม่ทำ DCF จึงเร็วกว่าชั้นที่ 2 ราว 20 เท่า
+#
+# ทำไมต้องมี 2 ชั้น :
+#   วิเคราะห์เต็มรูปแบบหุ้นสหรัฐทั้งตลาด = 87 ชั่วโมง + โหลดข้อมูล 82 GB
+#   จึงต้องคัดจากหมื่นตัวให้เหลือหลักสิบก่อน แล้วค่อยวิเคราะห์ลึก
+#   นี่คือวิธีที่ระบบคัดกรองหุ้นมืออาชีพใช้กันจริง
+# ===========================================================================
+
+QUICK_COLS = ["ticker", "ชื่อบริษัท", "กลุ่ม", "สกุลเงิน", "ราคา",
+              "มูลค่าตลาด (ล้าน)", "P/E", "P/BV", "P/S", "EV/EBITDA",
+              "ROE (%)", "อัตรากำไรสุทธิ (%)", "D/E", "ปันผล (%)",
+              "FCF Yield (%)", "โตรายได้ (%)"]
+
+
+def _num(x):
+    try:
+        v = float(x)
+        return v if np.isfinite(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def quick_one(ticker: str) -> dict:
+    """ดึงตัวเลขสรุปของหุ้น 1 ตัว — เร็ว ไม่แตะ SEC EDGAR"""
+    row = {"ticker": ticker}
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info or {}
+        price = _num(info.get("currentPrice") or info.get("regularMarketPrice")
+                     or info.get("previousClose"))
+        mcap = _num(info.get("marketCap"))
+        fcf = _num(info.get("freeCashflow"))
+        if not price or not mcap:
+            row["ปัญหา"] = "ไม่มีราคาหรือมูลค่าตลาด"
+            return row
+        row.update({
+            "ชื่อบริษัท": info.get("longName") or info.get("shortName") or ticker,
+            "กลุ่ม": info.get("sector") or "-",
+            "สกุลเงิน": info.get("currency") or "",
+            "ราคา": price,
+            "มูลค่าตลาด (ล้าน)": mcap / 1e6,
+            "P/E": _num(info.get("trailingPE")),
+            "P/BV": _num(info.get("priceToBook")),
+            "P/S": _num(info.get("priceToSalesTrailing12Months")),
+            "EV/EBITDA": _num(info.get("enterpriseToEbitda")),
+            "ROE (%)": (_num(info.get("returnOnEquity")) or 0) * 100
+                       if info.get("returnOnEquity") is not None else None,
+            "อัตรากำไรสุทธิ (%)": (_num(info.get("profitMargins")) or 0) * 100
+                                   if info.get("profitMargins") is not None else None,
+            "D/E": (_num(info.get("debtToEquity")) or 0) / 100
+                   if info.get("debtToEquity") is not None else None,
+            "ปันผล (%)": _num(info.get("dividendYield")),
+            "FCF Yield (%)": (fcf / mcap * 100) if fcf and mcap else None,
+            "โตรายได้ (%)": (_num(info.get("revenueGrowth")) or 0) * 100
+                             if info.get("revenueGrowth") is not None else None,
+            "ปัญหา": "",
+        })
+    except Exception as e:
+        row["ปัญหา"] = f"{type(e).__name__}: {str(e)[:60]}"
+    return row
+
+
+def quick_screen(tickers, workers=8, progress=None) -> pd.DataFrame:
+    """
+    คัดกรองเร็วหลายตัวพร้อมกัน
+
+    workers : จำนวนเส้นที่ดึงพร้อมกัน — อย่าตั้งเกิน 12
+              เพราะ yfinance จะมองว่ายิงถี่เกินไปแล้วบล็อก
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    rows, total = [], len(tickers)
+    with ThreadPoolExecutor(max_workers=min(workers, 12)) as ex:
+        futs = {ex.submit(quick_one, t): t for t in tickers}
+        for i, f in enumerate(as_completed(futs), 1):
+            rows.append(f.result())
+            if progress:
+                progress(i, total, futs[f])
+    df = pd.DataFrame(rows)
+    for c in QUICK_COLS:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[QUICK_COLS + ["ปัญหา"]]
+
+
+def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,
+                 min_mcap=None, min_div=None, max_de=None) -> pd.DataFrame:
+    """
+    กรองผลจากชั้นที่ 1 — ทุกเงื่อนไขไม่ใส่ก็ได้
+
+    หลักการ : ค่าที่ **ไม่มีข้อมูล** จะถูกคัดออกเมื่อมีการตั้งเงื่อนไขข้อนั้น
+    เพราะเราไม่ควรเดาแทนว่า "ไม่มีข้อมูล = ผ่านเกณฑ์"
+    """
+    if df.empty:
+        return df
+    m = df["ปัญหา"].eq("")
+    checks = [("P/E", max_pe, "le"), ("P/BV", max_pbv, "le"),
+              ("ROE (%)", min_roe, "ge"), ("FCF Yield (%)", min_fcf_yield, "ge"),
+              ("มูลค่าตลาด (ล้าน)", min_mcap, "ge"), ("ปันผล (%)", min_div, "ge"),
+              ("D/E", max_de, "le")]
+    for col, val, op in checks:
+        if val is None or col not in df.columns:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        m &= (s <= val) if op == "le" else (s >= val)
+        if col in ("P/E", "P/BV"):
+            m &= s > 0        # P/E ติดลบ = ขาดทุน ไม่ใช่ "ถูก"
+    return df[m].reset_index(drop=True)
+
+
+# ===========================================================================
+# ชั้นที่ 2 — วิเคราะห์ลึก (DCF เต็มรูปแบบ)
+# ===========================================================================
+
 def scan_one(ticker: str, rf=None, mos=None, refresh=False) -> dict:
     """
     วิเคราะห์หุ้น 1 ตัว คืนผลสรุปบรรทัดเดียว
@@ -104,19 +221,126 @@ def undervalued(df: pd.DataFrame, min_discount=0.0, min_score=0) -> pd.DataFrame
     return df[m].reset_index(drop=True)
 
 
+# ===========================================================================
+# เปรียบเทียบหุ้น 2–10 ตัว
+# ===========================================================================
+
+COMPARE_ROWS = [
+    ("ราคาตลาด", "ราคา", 2),
+    ("มูลค่าที่ประเมินได้", "มูลค่าที่ประเมินได้", 2),
+    ("ส่วนลด/ส่วนเกิน (%)", "ส่วนลด (%)", 1),
+    ("โซนราคา", "โซน", None),
+    ("ความน่าเชื่อถือ", "ความน่าเชื่อถือ", None),
+    ("คะแนนความน่าเชื่อถือ", "คะแนน", 0),
+    ("จำนวนปีข้อมูล", "ปีข้อมูล", 0),
+    ("ROE เฉลี่ย (%)", "ROE เฉลี่ย (%)", 1),
+    ("CAGR รายได้ (%)", "CAGR รายได้ (%)", 1),
+    ("ตลาดคาดให้โต (%)", "ตลาดคาดโต (%)", 1),
+    ("ใช้ DCF ได้ไหม", "ใช้ DCF", None),
+    ("กลุ่มอุตสาหกรรม", "กลุ่ม", None),
+]
+
+MAX_COMPARE = 10
+MIN_COMPARE = 2
+
+
+def compare(tickers, rf=None, mos=None, refresh=False, progress=None):
+    """
+    เปรียบเทียบหุ้น 2–10 ตัวแบบเคียงข้างกัน
+
+    คืน dict :
+        table  : DataFrame (แถว = หัวข้อ, คอลัมน์ = หุ้น) พร้อมเปรียบเทียบด้วยตา
+        raw    : DataFrame ดิบจาก scan()
+        errors : รายการหุ้นที่วิเคราะห์ไม่สำเร็จ
+    """
+    tickers = [t.strip().upper() for t in tickers if t and str(t).strip()]
+    tickers = list(dict.fromkeys(tickers))          # ตัดตัวซ้ำ คงลำดับเดิม
+    if len(tickers) < MIN_COMPARE:
+        raise ValueError(f"ต้องเลือกอย่างน้อย {MIN_COMPARE} ตัวจึงจะเปรียบเทียบได้")
+    if len(tickers) > MAX_COMPARE:
+        raise ValueError(f"เปรียบเทียบได้สูงสุด {MAX_COMPARE} ตัว "
+                         f"(เลือกมา {len(tickers)} ตัว)\n"
+                         "  เหตุผล: มากกว่านี้ตารางจะกว้างจนอ่านไม่รู้เรื่อง "
+                         "และใช้เวลานานเกินไป")
+
+    raw = scan(tickers, rf=rf, mos=mos, refresh=refresh, progress=progress)
+    ok = raw[raw["ปัญหา"].eq("")]
+    errors = [(r["ticker"], r["ปัญหา"]) for _, r in raw[~raw["ปัญหา"].eq("")].iterrows()]
+
+    if ok.empty:
+        return {"table": pd.DataFrame(), "raw": raw, "errors": errors}
+
+    ok = ok.set_index("ticker")
+    ok = ok.reindex([t for t in tickers if t in ok.index])   # คงลำดับที่ผู้ใช้เลือก
+
+    out = {}
+    for label, col, dec in COMPARE_ROWS:
+        if col not in ok.columns:
+            continue
+        vals = []
+        for t in ok.index:
+            v = ok.loc[t, col]
+            if pd.isna(v):
+                vals.append("—")
+            elif dec is None:
+                vals.append(str(v))
+            else:
+                vals.append(f"{float(v):,.{dec}f}")
+        out[label] = vals
+
+    table = pd.DataFrame(out, index=ok.index).T
+    table.columns = [f"{t}\n{str(ok.loc[t, 'ชื่อบริษัท'])[:22]}" for t in ok.index]
+    return {"table": table, "raw": raw, "errors": errors,
+            "winner": _pick_best(ok)}
+
+
+def _pick_best(ok: pd.DataFrame):
+    """
+    ชี้ตัวที่ "ตัวเลขน่าสนใจที่สุด" — ไม่ใช่คำแนะนำให้ซื้อ
+
+    ให้คะแนนจาก 2 ด้านเท่า ๆ กัน :
+        ส่วนลดจากมูลค่า  (ถูกแค่ไหน)
+        ความน่าเชื่อถือ   (เชื่อตัวเลขได้แค่ไหน)
+    จงใจให้ความน่าเชื่อถือมีน้ำหนักเท่าส่วนลด เพราะหุ้นที่ดู "ถูกมาก"
+    จากข้อมูล 4 ปีที่วิธีต่าง ๆ ขัดกัน ไม่ได้น่าสนใจกว่าหุ้นที่ถูกน้อยกว่าแต่ข้อมูลแน่น
+    """
+    d = pd.to_numeric(ok["ส่วนลด (%)"], errors="coerce")
+    s = pd.to_numeric(ok["คะแนน"], errors="coerce")
+    if d.notna().sum() == 0:
+        return None
+    dn = (d - d.min()) / (d.max() - d.min()) if d.max() != d.min() else d * 0 + 0.5
+    sn = s / 100.0
+    total = (dn.fillna(0) + sn.fillna(0)) / 2
+    best = total.idxmax()
+    return {"ticker": best, "คะแนนรวม": float(total.max()),
+            "ส่วนลด (%)": float(d.get(best, np.nan)),
+            "ความน่าเชื่อถือ": ok.loc[best, "ความน่าเชื่อถือ"]}
+
+
 # ---------------------------------------------------------------------------
 # ชุดหุ้นสำเร็จรูป
 # ---------------------------------------------------------------------------
 
 def preset(name: str, limit=None):
-    """ชุดหุ้นตั้งต้น — thai / us"""
-    from tickers import POPULAR_US, THAI_STOCKS
+    """
+    ชุดหุ้นตั้งต้น
+
+        thai       หุ้นไทยที่รู้จักทั้งหมด
+        us         หุ้นสหรัฐยอดนิยม 39 ตัว
+        us-all     หุ้นสหรัฐทั้งตลาดจากทะเบียน SEC (~10,000 ตัว)
+        all        ไทย + สหรัฐทั้งตลาด
+    """
+    from tickers import POPULAR_US, thai_universe, us_universe
     if name == "thai":
-        out = [f"{s}.BK" for s in THAI_STOCKS]
+        out = thai_universe()
     elif name == "us":
         out = list(POPULAR_US)
+    elif name == "us-all":
+        out = us_universe()
+    elif name == "all":
+        out = thai_universe() + us_universe()
     else:
-        raise ValueError("ชุดหุ้นมีให้เลือก : thai หรือ us")
+        raise ValueError("ชุดหุ้นมีให้เลือก : thai / us / us-all / all")
     return out[:limit] if limit else out
 
 
@@ -167,14 +391,42 @@ def print_report(df: pd.DataFrame, min_discount=0.0):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="สแกนหาหุ้นที่ราคาต่ำกว่ามูลค่าที่ประเมินได้")
+    p = argparse.ArgumentParser(
+        description="สแกนและเปรียบเทียบหุ้น",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+ตัวอย่างการใช้งาน
+------------------
+  คัดกรองเร็วทั้งตลาดสหรัฐ (ราว 20 นาที) แล้วบันทึกไฟล์
+    python3 screener.py --quick --list us-all --csv us_all.csv
+
+  คัดกรองเร็วหุ้นไทยทั้งหมด พร้อมกรอง P/E < 15 และ ROE > 12%
+    python3 screener.py --quick --list thai --max-pe 15 --min-roe 12 --rf 0.025
+
+  วิเคราะห์ลึกเฉพาะตัวที่คัดมาแล้ว
+    python3 screener.py PTT.BK KBANK.BK AOT.BK --rf 0.025
+
+  เปรียบเทียบหุ้น 2-10 ตัว
+    python3 screener.py --compare AAPL MSFT GOOGL NVDA
+""")
     p.add_argument("tickers", nargs="*", help="ชื่อย่อหุ้น เว้นวรรคคั่น")
-    p.add_argument("--list", choices=["thai", "us"], help="ใช้ชุดหุ้นสำเร็จรูป")
-    p.add_argument("--max", type=int, default=20, help="จำนวนสูงสุดที่จะสแกน")
+    p.add_argument("--list", choices=["thai", "us", "us-all", "all"],
+                   help="ใช้ชุดหุ้นสำเร็จรูป")
+    p.add_argument("--quick", action="store_true",
+                   help="ใช้ชั้นคัดกรองเร็ว (รองรับทั้งตลาด ไม่ทำ DCF)")
+    p.add_argument("--compare", action="store_true", help="โหมดเปรียบเทียบ 2-10 ตัว")
+    p.add_argument("--max", type=int, help="จำนวนสูงสุดที่จะสแกน")
+    p.add_argument("--workers", type=int, default=8, help="จำนวนเส้นที่ดึงพร้อมกัน")
     p.add_argument("--rf", type=float, help="อัตราพันธบัตร (หุ้นไทยใส่ 0.025)")
     p.add_argument("--mos", type=float, help="ส่วนเผื่อความปลอดภัย")
-    p.add_argument("--min-discount", type=float, default=0.0,
-                   help="แสดงเฉพาะที่ส่วนลดมากกว่ากี่ % (ค่าเริ่มต้น 0)")
+    p.add_argument("--min-discount", type=float, default=0.0)
+    # ตัวกรองของชั้นคัดกรองเร็ว
+    p.add_argument("--max-pe", type=float)
+    p.add_argument("--max-pbv", type=float)
+    p.add_argument("--min-roe", type=float)
+    p.add_argument("--min-fcf-yield", type=float)
+    p.add_argument("--min-mcap", type=float, help="มูลค่าตลาดขั้นต่ำ (ล้าน)")
+    p.add_argument("--min-div", type=float)
     p.add_argument("--refresh", action="store_true")
     p.add_argument("--csv", help="บันทึกผลเป็นไฟล์ CSV")
     args = p.parse_args()
@@ -183,11 +435,81 @@ def main() -> int:
     if args.list:
         tickers += preset(args.list)
     if not tickers:
-        p.error("ต้องระบุชื่อหุ้น หรือใช้ --list thai / --list us")
-    tickers = tickers[:args.max]
+        p.error("ต้องระบุชื่อหุ้น หรือใช้ --list")
+
+    # ---------- โหมดเปรียบเทียบ ----------
+    if args.compare:
+        try:
+            res = compare(tickers, rf=args.rf, mos=args.mos, refresh=args.refresh,
+                          progress=lambda i, n, t: print(f"  [{i}/{n}] {t} ...", flush=True))
+        except ValueError as e:
+            print(f"\n[ไม่สำเร็จ] {e}\n", file=sys.stderr)
+            return 1
+        t = res["table"]
+        if t.empty:
+            print("\nวิเคราะห์ไม่สำเร็จสักตัว")
+            return 1
+        print("\n" + "=" * 100)
+        print("  เปรียบเทียบหุ้น")
+        print("=" * 100)
+        with pd.option_context("display.max_columns", None, "display.width", 200):
+            print(t.to_string())
+        w = res.get("winner")
+        if w:
+            print(f"\n  ตัวเลขน่าสนใจที่สุด : {w['ticker']} "
+                  f"(ส่วนลด {w['ส่วนลด (%)']:.0f}% · ความน่าเชื่อถือ {w['ความน่าเชื่อถือ']})")
+            print("  หมายเหตุ : ให้น้ำหนัก 'ส่วนลด' กับ 'ความน่าเชื่อถือ' เท่ากัน")
+            print("             ไม่ใช่คำแนะนำให้ซื้อ เป็นเพียงการจัดอันดับตัวเลข")
+        for tk, err in res["errors"]:
+            print(f"  [ไม่สำเร็จ] {tk}: {err[:70]}")
+        if args.csv:
+            res["raw"].to_csv(args.csv, index=False, encoding="utf-8-sig")
+            print(f"\nบันทึกไฟล์แล้ว : {args.csv}")
+        return 0
+
+    if args.max:
+        tickers = tickers[:args.max]
+
+    # ---------- ชั้นที่ 1 : คัดกรองเร็ว ----------
+    if args.quick:
+        est = len(tickers) * 1.5 / args.workers / 60
+        print(f"\nคัดกรองเร็ว {len(tickers):,} ตัว "
+              f"({args.workers} เส้นพร้อมกัน) — คาดว่าราว {est:.0f} นาที\n")
+        done = [0]
+
+        def show(i, total, t):
+            if i % 25 == 0 or i == total:
+                print(f"  {i:,}/{total:,} ...", flush=True)
+
+        df = quick_screen(tickers, workers=args.workers, progress=show)
+        got = df[df["ปัญหา"].eq("")]
+        out = quick_filter(df, max_pe=args.max_pe, max_pbv=args.max_pbv,
+                           min_roe=args.min_roe, min_fcf_yield=args.min_fcf_yield,
+                           min_mcap=args.min_mcap, min_div=args.min_div)
+        out = out.sort_values("P/E", na_position="last")
+        print(f"\n  ดึงข้อมูลได้ {len(got):,} / {len(df):,} ตัว · ผ่านเกณฑ์ {len(out):,} ตัว\n")
+        cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "ROE (%)",
+                "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)"]
+        with pd.option_context("display.max_rows", 80, "display.width", 200):
+            print(out[cols].head(60).to_string(index=False))
+        print("\n  ⚠️ นี่คือการคัดกรองชั้นแรกจากตัวเลขสรุปเท่านั้น ยังไม่ได้ประเมินมูลค่า")
+        print("     ขั้นต่อไป : เอารายชื่อที่ผ่านเกณฑ์ไปวิเคราะห์ลึกด้วยคำสั่ง")
+        print("     python3 screener.py <ชื่อหุ้นที่ผ่าน> --rf 0.025")
+        if args.csv:
+            out.to_csv(args.csv, index=False, encoding="utf-8-sig")
+            print(f"\nบันทึกไฟล์แล้ว : {args.csv}")
+        return 0
+
+    # ---------- ชั้นที่ 2 : วิเคราะห์ลึก ----------
+    if len(tickers) > 60:
+        print(f"\n[หยุด] เลือกมา {len(tickers):,} ตัว — วิเคราะห์ลึกมากขนาดนี้จะใช้เวลา "
+              f"{len(tickers)*30/3600:.0f} ชั่วโมง", file=sys.stderr)
+        print("  ให้ใช้ --quick คัดกรองก่อน แล้วค่อยวิเคราะห์ลึกเฉพาะตัวที่ผ่าน\n",
+              file=sys.stderr)
+        return 1
 
     est = len(tickers) * 30 / 60
-    print(f"\nกำลังสแกน {len(tickers)} ตัว — คาดว่าใช้เวลาราว {est:.0f} นาที")
+    print(f"\nกำลังวิเคราะห์ลึก {len(tickers)} ตัว — คาดว่าใช้เวลาราว {est:.0f} นาที")
     print("(ตัวที่เคยวิเคราะห์แล้วภายใน 24 ชม. จะเร็วมาก)\n")
 
     def show(i, total, t):
