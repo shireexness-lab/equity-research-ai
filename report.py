@@ -105,20 +105,53 @@ def setup_matplotlib_font():
 # ตัวช่วยสร้างกราฟ
 # ---------------------------------------------------------------------------
 
+# สีของ "ตัวกราฟ" (เส้น/แท่ง) ใช้ชุดเดียวกันทั้งสองธีม
+# เปลี่ยนเฉพาะสีตัวหนังสือและเส้นตาราง เพื่อให้อ่านได้ทั้งพื้นขาวและพื้นดำ
+_TXT = "#222222"
+_TITLE = C_MAIN
+
+
+_LIGHT = {"main": "#1f4e79", "accent": "#c55a11", "good": "#2e7d32",
+          "bad": "#c62828", "grey": "#8a8a8a", "txt": "#222222"}
+_DARK = {"main": "#5b9bd5", "accent": "#f0873a", "good": "#66bb6a",
+         "bad": "#ef5350", "grey": "#9e9e9e", "txt": "#e6e6e6"}
+
+
+def set_chart_theme(dark: bool = False):
+    """
+    สลับชุดสีของกราฟให้เข้ากับธีมสว่าง/มืด
+
+    เคล็ดลับสำคัญ : พื้นหลังกราฟตั้งเป็น **โปร่งใส** เสมอ
+    จึงกลมกลืนกับพื้นหลังของหน้าเว็บหรือ PDF โดยอัตโนมัติ
+    เหลือแค่สีเส้น/แท่ง/ตัวหนังสือที่ต้องสลับ
+
+    ทำไมต้องสลับสีเส้นด้วย ไม่ใช่แค่ตัวหนังสือ :
+    น้ำเงินเข้ม #1f4e79 บนพื้นดำแทบมองไม่เห็น จึงต้องใช้น้ำเงินสว่างแทน
+    """
+    global C_MAIN, C_ACCENT, C_GOOD, C_BAD, C_GREY, _TXT, _TITLE
+    p = _DARK if dark else _LIGHT
+    C_MAIN, C_ACCENT, C_GOOD = p["main"], p["accent"], p["good"]
+    C_BAD, C_GREY, _TXT = p["bad"], p["grey"], p["txt"]
+    _TITLE = C_MAIN
+    for k in ("text.color", "axes.labelcolor", "xtick.color", "ytick.color"):
+        plt.rcParams[k] = _TXT
+    plt.rcParams["axes.edgecolor"] = _TXT
+
+
 def _fig_b64(fig) -> str:
     """แปลงกราฟเป็นข้อความ base64 เพื่อฝังลง HTML โดยตรง (ไม่ต้องมีไฟล์แยก)"""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", bbox_inches="tight", transparent=True)
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _style(ax, title="", ylabel=""):
-    ax.set_title(title, fontsize=11, color=C_MAIN, pad=10, fontweight="bold")
-    ax.set_ylabel(ylabel, fontsize=9)
-    ax.grid(axis="y", alpha=0.25, linewidth=0.6)
+    ax.set_title(title, fontsize=11, color=_TITLE, pad=10, fontweight="bold")
+    ax.set_ylabel(ylabel, fontsize=9, color=_TXT)
+    ax.grid(axis="y", alpha=0.25, linewidth=0.6, color=_TXT)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=8)
+    ax.tick_params(labelsize=8, colors=_TXT)
 
 
 def chart_revenue_profit(R):
@@ -209,7 +242,7 @@ def chart_price_bands(data, b):
             ax.axhline(hi, color=colors.get(name, C_GREY), ls="--", lw=1.0, alpha=0.85)
             ax.text(1.005, hi, f" {name}", transform=ax.get_yaxis_transform(),
                     fontsize=7, color=colors.get(name, C_GREY), va="center")
-    ax.axhline(b["มูลค่าที่ประเมินได้"], color="black", lw=1.4,
+    ax.axhline(b["มูลค่าที่ประเมินได้"], color=_TXT, lw=1.4,
                label="มูลค่าที่ประเมินได้")
     _style(ax, "ราคาย้อนหลังเทียบช่วงราคาที่คำนวณได้", b["สกุลเงิน"])
     ax.legend(fontsize=8, frameon=False, loc="upper left")
@@ -230,7 +263,7 @@ def chart_methods(v):
         ax.axvline(price, color=C_BAD, lw=1.6, label=f"ราคาตลาด {price:,.2f}")
         ax.legend(fontsize=8, frameon=False)
     for i, val in enumerate(vals):
-        ax.text(val, i, f" {val:,.0f}", va="center", fontsize=8, color=C_MAIN)
+        ax.text(val, i, f" {val:,.0f}", va="center", fontsize=8, color=_TXT)
     _style(ax, "มูลค่าต่อหุ้นจากแต่ละวิธี", "")
     ax.grid(axis="x", alpha=0.25, linewidth=0.6)
     ax.grid(axis="y", visible=False)
@@ -607,6 +640,7 @@ def analyze_all(ticker, wacc=None, g1=None, rf=None, mos=None, refresh=False):
 def render_pdf(data, S, R, v, b, out_dir=None) -> Path:
     """สร้างไฟล์ PDF จากผลที่คำนวณไว้แล้ว"""
     setup_matplotlib_font()
+    set_chart_theme(dark=False)   # PDF พิมพ์ลงกระดาษขาว จึงใช้ธีมสว่างเสมอ
     html = build_html(data, S, R, v, b)
     out = Path(out_dir) if out_dir else OUT_DIR
     out.mkdir(parents=True, exist_ok=True)

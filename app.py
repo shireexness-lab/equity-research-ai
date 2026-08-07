@@ -96,19 +96,25 @@ def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียง�
 #   ตาราง HTML ธรรมดาไม่มีปัญหานี้ และแสดงผลบนมือถือได้ดีกว่า
 # ---------------------------------------------------------------------------
 
+# หมายเหตุการออกแบบ CSS :
+#   ใช้ currentColor และ rgba แทนการระบุสีตายตัว
+#   เพื่อให้ตารางอ่านได้ทั้งธีมมืดและธีมสว่างโดยไม่ต้องเขียนสองชุด
+#   (currentColor = สีตัวหนังสือที่ Streamlit กำหนดให้ตามธีมที่ผู้ใช้เลือก)
 TABLE_CSS = """
 <style>
- .t { width:100%; border-collapse:collapse; font-size:.82rem; margin:.3rem 0 .9rem 0; }
- .t th { background:#1f4e79; color:#fff; padding:.35rem .5rem; text-align:right;
-         font-weight:500; white-space:nowrap; }
+ .t { width:100%; border-collapse:collapse; font-size:.82rem; margin:.3rem 0 .9rem 0;
+      color:inherit; }
+ .t th { background:rgba(128,150,180,.28); padding:.35rem .5rem; text-align:right;
+         font-weight:600; white-space:nowrap; color:inherit; }
  .t th.l, .t td.l { text-align:left; }
- .t td { padding:.3rem .5rem; text-align:right; border-bottom:1px solid #e8ecf0;
-         white-space:nowrap; }
- .t tr:nth-child(even) { background:#f7f9fb; }
+ .t td { padding:.3rem .5rem; text-align:right; white-space:nowrap;
+         border-bottom:1px solid rgba(128,128,128,.25); }
+ .t tbody tr:nth-child(even) { background:rgba(128,128,128,.08); }
  .tw { overflow-x:auto; }
- .mc { border:1px solid #e3e8ee; border-radius:.5rem; padding:.6rem .8rem; }
- .mc .k { color:#666; font-size:.78rem; }
- .mc .v { color:#1f4e79; font-size:1.3rem; font-weight:700; line-height:1.3; }
+ .mc { border:1px solid rgba(128,128,128,.35); border-radius:.5rem;
+       padding:.6rem .8rem; }
+ .mc .k { opacity:.7; font-size:.78rem; }
+ .mc .v { font-size:1.3rem; font-weight:700; line-height:1.3; }
  .mc .d { font-size:.78rem; }
 </style>
 """
@@ -146,8 +152,10 @@ def kv_table(pairs, dec=2):
                 unsafe_allow_html=True)
 
 
-def metric_card(col, label, value, delta=None, color="#1f4e79"):
-    d = f"<div class='d' style='color:{color}'>{delta}</div>" if delta else ""
+def metric_card(col, label, value, delta=None, color=None):
+    d = (f"<div class='d' style='color:{color}'>{delta}</div>"
+         if delta and color else
+         (f"<div class='d' style='opacity:.7'>{delta}</div>" if delta else ""))
     col.markdown(f"<div class='mc'><div class='k'>{label}</div>"
                  f"<div class='v'>{value}</div>{d}</div>", unsafe_allow_html=True)
 
@@ -160,13 +168,42 @@ st.title("📊 Equity Research AI Pro")
 st.caption("วิเคราะห์หุ้นจากงบการเงินจริง · หุ้นสหรัฐใช้ SEC EDGAR ย้อนหลัง 15 ปี · "
            "หุ้นไทยใส่ .BK ต่อท้าย")
 
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def ticker_options():
+    """รายชื่อหุ้นสำหรับช่องค้นหา — เก็บไว้ 24 ชม. เพราะแทบไม่เปลี่ยน"""
+    from tickers import build_options
+    return build_options()
+
+
+try:
+    OPTIONS, LOOKUP = ticker_options()
+except Exception:
+    OPTIONS, LOOKUP = [], {}
+
+manual = st.toggle("พิมพ์ ticker เอง (สำหรับหุ้นที่ไม่มีในรายชื่อ)",
+                   value=not OPTIONS,
+                   help="รายชื่อหุ้นไทยเป็นรายชื่อตั้งต้น ไม่ครบทุกตัว "
+                        "ถ้าหาไม่เจอให้เปิดสวิตช์นี้แล้วพิมพ์เอง")
+
 c1, c2 = st.columns([3, 1])
 with c1:
-    ticker = st.text_input("ใส่ชื่อย่อหุ้น", value="AAPL",
-                           placeholder="เช่น AAPL, MSFT, PTT.BK, TQM.BK",
-                           label_visibility="collapsed").strip().upper()
+    if manual or not OPTIONS:
+        ticker = st.text_input("ใส่ชื่อย่อหุ้น", value="AAPL",
+                               placeholder="เช่น AAPL, MSFT, PTT.BK",
+                               label_visibility="collapsed").strip().upper()
+    else:
+        # selectbox ของ Streamlit กรองรายชื่อให้ทันทีที่พิมพ์
+        # (ค้นได้ทั้งชื่อย่อและชื่อบริษัท เช่น พิมพ์ "ปตท" หรือ "Apple")
+        default = OPTIONS.index("AAPL — Apple Inc.") if "AAPL — Apple Inc." in OPTIONS else 0
+        pick = st.selectbox("เลือกหุ้น", OPTIONS, index=default,
+                            label_visibility="collapsed",
+                            placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL, ปตท, ธนาคาร")
+        ticker = LOOKUP.get(pick, str(pick).split(" ")[0]).upper()
 with c2:
     go = st.button("วิเคราะห์", type="primary", use_container_width=True)
+
+if OPTIONS and not manual:
+    st.caption(f"ค้นหาได้ {len(OPTIONS):,} ตัว — พิมพ์ชื่อย่อหรือชื่อบริษัทเพื่อกรอง")
 
 with st.expander("ตั้งค่าขั้นสูง (ไม่กรอกก็ได้ ระบบจะประมาณให้เอง)"):
     a1, a2, a3, a4 = st.columns(4)
@@ -186,7 +223,15 @@ with st.expander("ตั้งค่าขั้นสูง (ไม่กรอ
         mos = st.number_input("ส่วนเผื่อความปลอดภัย", 0.0, 0.60, 0.0, 0.05,
                               format="%.2f",
                               help="0 = ให้ระบบปรับตามความไม่แน่นอนอัตโนมัติ")
-    refresh = st.checkbox("ดึงข้อมูลใหม่ ไม่ใช้ที่เก็บไว้")
+    e1, e2 = st.columns(2)
+    with e1:
+        refresh = st.checkbox("ดึงข้อมูลใหม่ ไม่ใช้ที่เก็บไว้")
+    with e2:
+        light_charts = st.checkbox(
+            "กราฟสำหรับพื้นหลังสว่าง",
+            help="ค่าเริ่มต้นของแอปเป็นธีมมืด ถ้าสลับไปธีมสว่างที่ปุ่ม ⋮ "
+                 "มุมขวาบน → Settings → Appearance ให้ติ๊กช่องนี้ด้วย "
+                 "เพื่อให้สีกราฟอ่านง่ายขึ้น")
 
 if not go and "ran" not in st.session_state:
     st.info("พิมพ์ชื่อย่อหุ้นแล้วกด **วิเคราะห์** — ครั้งแรกของแต่ละตัวใช้เวลาราว 20–40 วินาที "
@@ -275,6 +320,8 @@ with d2:
 # ---------- เนื้อหาแยกแท็บ ----------
 import report as RP
 RP.setup_matplotlib_font()
+# กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
+RP.set_chart_theme(dark=not light_charts)
 
 t1, t2, t3, t4, t5 = st.tabs(
     ["ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า", "ช่วงราคา"])

@@ -3,10 +3,11 @@
 # ⚠️ ห้ามสับสนกับ .streamlit/secrets.toml ซึ่งมีความลับและถูกกันไว้ใน .gitignore แล้ว
 
 [theme]
-primaryColor = "#1f4e79"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f4f7fa"
-textColor = "#222222"
+# ธีมมืดเป็นค่าเริ่มต้น
+# ผู้ใช้สลับเป็นธีมสว่างเองได้ที่ปุ่ม ⋮ มุมขวาบน → Settings → Appearance
+# (จงใจกำหนดแค่ 2 บรรทัด ไม่กำหนดสีพื้นหลังเอง เพื่อให้ปุ่มสลับธีมยังใช้งานได้)
+base = "dark"
+primaryColor = "#5b9bd5"
 
 [server]
 # ไม่ต้องรับไฟล์อัปโหลด จำกัดไว้เพื่อความปลอดภัยและประหยัดหน่วยความจำ
