@@ -78,18 +78,25 @@ def build(kind: str, limit: int = 0, market=None, industry=None) -> int:
         df = quick_screen(uni, progress=_bar)
 
     print()
-    n_ok = int(df["ปัญหา"].eq("").sum())
-    rate = n_ok / len(df) * 100 if len(df) else 0
+    n_new = int(df["ปัญหา"].eq("").sum())
     mins = (time.time() - t0) / 60
-
-    print(f"\n  ดึงสำเร็จ : {n_ok:,} / {len(df):,} ตัว  ({rate:.0f}%)")
+    print(f"\n  ดึงสำเร็จ : {n_new:,} / {len(df):,} ตัว  "
+          f"({n_new/len(df)*100 if len(df) else 0:.0f}%)")
     print(f"  ใช้เวลา   : {mins:.1f} นาที")
 
-    # ---- ป้องกันการทับของดีด้วยของเสีย ----
-    # ถ้ารอบนี้ล้มเหลวเป็นส่วนใหญ่ (เช่นเน็ตหลุด หรือ Yahoo บล็อกชั่วคราว)
-    # การบันทึกทับจะทำให้ข้อมูลดีที่เคยมีหายไป ซึ่งแย่กว่าการไม่บันทึกเลย
-    if n_ok < max(1, len(df) * 0.3):
-        print("\n  [ไม่บันทึก] รอบนี้ดึงสำเร็จน้อยเกินไป จึงไม่ทับของเดิม")
+    # ---- รวมกับของเดิม ----
+    # ตัวที่พลาดไม่ใช่ตัวเดียวกันทุกรอบ การรวมจึงทำให้ยิ่งดึงยิ่งครบ
+    # และไม่มีทางที่ข้อมูลดีที่เคยได้มาแล้วจะหายไป
+    prev, _ = snapshot.info(key)
+    df = snapshot.merge(prev, df)
+    n_ok = int(df["ปัญหา"].eq("").sum())
+    if prev is not None:
+        gain = n_ok - n_new
+        print(f"  รวมของเดิม: {n_ok:,} / {len(df):,} ตัว"
+              + (f"  (ได้เพิ่มจากรอบก่อน {gain:,} ตัว)" if gain > 0 else ""))
+
+    if n_ok == 0:
+        print("\n  [ไม่บันทึก] ไม่มีข้อมูลที่ใช้ได้เลย")
         errs = df.loc[~df["ปัญหา"].eq(""), "ปัญหา"].value_counts()
         print("\n  สาเหตุที่พบบ่อย:")
         for msg, n in errs.head(5).items():

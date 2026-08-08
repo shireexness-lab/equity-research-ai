@@ -431,6 +431,74 @@ def info(name: str):
 
 
 # ---------------------------------------------------------------------------
+# รวมผลหลายรอบให้ครบขึ้นเรื่อย ๆ
+# ---------------------------------------------------------------------------
+
+STAMP_COL = "ข้อมูล ณ"
+
+
+def merge(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    """
+    รวมผลรอบใหม่เข้ากับรอบเก่า — ยึด "แถวที่ดึงสำเร็จ" เป็นหลัก
+
+    ทำไมต้องรวม
+    ------------
+    ไม่มีรอบไหนดึงได้ครบ 100% เพราะ Yahoo ปฏิเสธคำขอเป็นครั้งคราว
+    รอบหนึ่งอาจได้ 856/866 อีกรอบได้ 850/866 แต่ **ตัวที่พลาดไม่ใช่ตัวเดียวกัน**
+
+    ถ้าเขียนทับกันตรง ๆ รอบที่ได้ 850 จะลบข้อมูลดี 6 ตัวของรอบก่อนทิ้ง
+    ยิ่งดึงยิ่งอาจได้น้อยลง ซึ่งขัดกับสัญชาตญาณและทำให้ผู้ใช้ไม่ไว้ใจระบบ
+
+    การรวมทำให้ความครบถ้วนมีแต่เพิ่มขึ้น ไม่มีวันลดลง
+
+    กติกาตัดสินทีละ ticker
+    -----------------------
+    รอบใหม่สำเร็จ            -> ใช้รอบใหม่ (ข้อมูลสดกว่า)
+    รอบใหม่พลาด รอบเก่าสำเร็จ -> ใช้รอบเก่า พร้อมทำเครื่องหมายว่าเป็นข้อมูลวันเก่า
+    พลาดทั้งคู่               -> ใช้รอบใหม่ (ข้อความผิดพลาดที่ตรงกับสถานการณ์ล่าสุด)
+
+    ยึด ticker ตามรอบใหม่เท่านั้น — ถ้าหุ้นถูกเพิกถอนไปแล้วจะไม่ค้างอยู่ในตาราง
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    new = new.copy()
+    if STAMP_COL not in new.columns:
+        new[STAMP_COL] = today
+
+    if old is None or old.empty or "ticker" not in old.columns:
+        return new
+
+    old = old.copy()
+    if STAMP_COL not in old.columns:
+        # ไฟล์เก่าที่ยังไม่มีคอลัมน์นี้ — ใช้เวลาที่บันทึกไฟล์เป็นตัวแทน
+        old[STAMP_COL] = old.attrs.get("บันทึกเมื่อ", "")[:10] or "ก่อนหน้านี้"
+
+    new_ok = new["ปัญหา"].eq("") if "ปัญหา" in new.columns else pd.Series(True, index=new.index)
+    old_ok = old["ปัญหา"].eq("") if "ปัญหา" in old.columns else pd.Series(True, index=old.index)
+
+    # ตัวที่รอบใหม่พลาด แต่รอบเก่ามีของดี
+    rescue = old[old_ok].set_index("ticker")
+    need = set(new.loc[~new_ok, "ticker"]) & set(rescue.index)
+    if not need:
+        return new
+
+    new = new.set_index("ticker")
+    cols = [c for c in new.columns if c in rescue.columns]
+    new.loc[list(need), cols] = rescue.loc[list(need), cols]
+    return new.reset_index()
+
+
+def merge_stats(df: pd.DataFrame) -> dict:
+    """สรุปว่าตารางที่รวมแล้วมีข้อมูลของวันไหนบ้าง — ใช้บอกผู้ใช้ตามตรง"""
+    if df is None or df.empty or STAMP_COL not in df.columns:
+        return {}
+    ok = df[df["ปัญหา"].eq("")] if "ปัญหา" in df.columns else df
+    return {"สำเร็จ": int(len(ok)),
+            "ทั้งหมด": int(len(df)),
+            "แยกตามวัน": ok[STAMP_COL].value_counts().sort_index(ascending=False).to_dict()}
+
+
+# ---------------------------------------------------------------------------
 # ใช้จาก Terminal
 # ---------------------------------------------------------------------------
 

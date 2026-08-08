@@ -62,6 +62,16 @@ def _num(x):
         return None
 
 
+# กลุ่มธุรกิจที่ "อัตรากำไรขั้นต้น" ไม่มีความหมาย เพราะไม่มีต้นทุนขาย
+_FIN_WORDS = ("financial", "bank", "insurance", "capital markets", "credit",
+              "asset management")
+
+
+def is_financial_sector(sector: str) -> bool:
+    s = str(sector or "").lower()
+    return any(w in s for w in _FIN_WORDS)
+
+
 def quick_one(ticker: str) -> dict:
     """ดึงตัวเลขสรุปของหุ้น 1 ตัว — เร็ว ไม่แตะ SEC EDGAR"""
     row = {"ticker": ticker}
@@ -75,9 +85,28 @@ def quick_one(ticker: str) -> dict:
         if not price or not mcap:
             row["ปัญหา"] = "ไม่มีราคาหรือมูลค่าตลาด"
             return row
+        sector = info.get("sector") or "-"
+
+        # ค่าที่ไม่มีต้องเป็น "ไม่มีข้อมูล" ไม่ใช่ 0
+        # เดิมเขียน (_num(x) or 0) ซึ่งแปลงค่าที่อ่านไม่ได้ให้เป็น 0
+        # ผลคือ D/E ขึ้น 0.00 = "ไม่มีหนี้เลย" ทั้งที่ความจริงคือ "ไม่รู้"
+        # การเดาแทนผู้ใช้แบบนี้อันตรายกว่าการเว้นว่าง เพราะดูเหมือนข้อมูลจริง
+        def pct(k):
+            v = _num(info.get(k))
+            return v * 100 if v is not None else None
+
+        gross = pct("grossMargins")
+        # บริษัทการเงินไม่มี "ต้นทุนขาย" อัตรากำไรขั้นต้นจึงออกมา 100% หรือ 0%
+        # ซึ่งไม่ได้แปลว่าดีหรือแย่ และเอาไปเทียบกับบริษัททั่วไปไม่ได้
+        # เว้นว่างดีกว่าแสดงตัวเลขที่ตีความผิดได้
+        if is_financial_sector(sector):
+            gross = None
+
+        de = _num(info.get("debtToEquity"))
+
         row.update({
             "ชื่อบริษัท": info.get("longName") or info.get("shortName") or ticker,
-            "กลุ่ม": info.get("sector") or "-",
+            "กลุ่ม": sector,
             "สกุลเงิน": info.get("currency") or "",
             "ราคา": price,
             "มูลค่าตลาด (ล้าน)": mcap / 1e6,
@@ -85,20 +114,18 @@ def quick_one(ticker: str) -> dict:
             "P/BV": _num(info.get("priceToBook")),
             "P/S": _num(info.get("priceToSalesTrailing12Months")),
             "EV/EBITDA": _num(info.get("enterpriseToEbitda")),
-            "ROE (%)": (_num(info.get("returnOnEquity")) or 0) * 100
-                       if info.get("returnOnEquity") is not None else None,
+            "ROE (%)": pct("returnOnEquity"),
             # อัตรากำไรขั้นต้น = บอกว่าสินค้า/บริการมีอำนาจตั้งราคาแค่ไหน
             # อัตรากำไรสุทธิ = เหลือถึงมือผู้ถือหุ้นเท่าไรหลังหักทุกอย่าง
-            "อัตรากำไรขั้นต้น (%)": (_num(info.get("grossMargins")) or 0) * 100
-                                     if info.get("grossMargins") is not None else None,
-            "อัตรากำไรสุทธิ (%)": (_num(info.get("profitMargins")) or 0) * 100
-                                   if info.get("profitMargins") is not None else None,
-            "D/E": (_num(info.get("debtToEquity")) or 0) / 100
-                   if info.get("debtToEquity") is not None else None,
+            "อัตรากำไรขั้นต้น (%)": gross,
+            "อัตรากำไรสุทธิ (%)": pct("profitMargins"),
+            # yfinance ให้ debtToEquity มาเป็น % และนับเฉพาะ **หนี้ที่มีดอกเบี้ย**
+            # (เงินกู้ระยะสั้น + ระยะยาว) ไม่ใช่หนี้สินรวมทั้งงบดุล
+            # จึงไม่รวมเจ้าหนี้การค้าและค่าใช้จ่ายค้างจ่าย
+            "D/E": de / 100 if de is not None else None,
             "ปันผล (%)": _num(info.get("dividendYield")),
             "FCF Yield (%)": (fcf / mcap * 100) if fcf and mcap else None,
-            "โตรายได้ (%)": (_num(info.get("revenueGrowth")) or 0) * 100
-                             if info.get("revenueGrowth") is not None else None,
+            "โตรายได้ (%)": pct("revenueGrowth"),
             "ปัญหา": "",
         })
     except Exception as e:
@@ -207,6 +234,11 @@ def quality_flags(df, min_mcap=DEFAULT_MIN_MCAP,
         # ใช้คำสั้นที่สุดที่ยังเข้าใจได้ เพราะคอลัมน์นี้ต้องอยู่ใกล้ชื่อหุ้น
         if pd.notna(nm.get(i)) and nm[i] <= 0:
             w.append("ขาดทุน")
+        # กำไรสุทธิเกิน 100% ของรายได้ = กำไรส่วนใหญ่ไม่ได้มาจากการขายของ
+        # มักเป็นกำไรจากการขายสินทรัพย์ ตีมูลค่าทรัพย์สินใหม่ หรือส่วนแบ่งจากบริษัทร่วม
+        # เป็นตัวเลขจริงในงบ แต่ไม่เกิดซ้ำ จึงเอาไปคาดการณ์อนาคตไม่ได้
+        if pd.notna(nm.get(i)) and nm[i] > 100:
+            w.append("กำไรพิเศษ")
         if pd.notna(pbv.get(i)) and pbv[i] <= 0:
             w.append("ทุนติดลบ")
         if pd.notna(cap.get(i)) and cap[i] < min_mcap:
