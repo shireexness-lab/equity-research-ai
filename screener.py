@@ -342,25 +342,90 @@ def scan_one(ticker: str, rf=None, mos=None, refresh=False) -> dict:
         price = v["ราคาปัจจุบัน"]
         fair = b["มูลค่าที่ประเมินได้"]
         rel = b["ความน่าเชื่อถือ"]
+        sm = R["summary"]
+        val = R.get("valuation") or {}
+        tb = R["table"]
         row.update({
             "ชื่อบริษัท": info.get("longName") or ticker,
             "กลุ่ม": info.get("sector") or "-",
             "สกุลเงิน": v["สกุลเงิน"],
+
+            # ---- มูลค่าและราคา ----
             "ราคา": price,
             "มูลค่าที่ประเมินได้": fair,
             "ส่วนลด (%)": (1 - price / fair) * 100 if fair and price else np.nan,
             "โซน": b["โซนปัจจุบัน"],
+            "มูลค่าตลาด (ล้าน)": val.get("มูลค่าตลาด (ล้าน)"),
+            "ส่วนเผื่อความปลอดภัย (%)": (b.get("mos ที่ใช้") or 0) * 100,
+
+            # ---- อัตราส่วนราคา (ปีล่าสุด) ----
+            "P/E": val.get("P/E"),
+            "P/BV": val.get("P/BV"),
+            "P/S": val.get("P/S"),
+            "P/FCF": val.get("P/FCF"),
+            "EV/EBITDA": val.get("EV/EBITDA"),
+            "EV/EBIT": val.get("EV/EBIT"),
+            "Earnings Yield (%)": val.get("Earnings Yield (%)"),
+            "FCF Yield (%)": val.get("FCF Yield (%)"),
+
+            # ---- การเติบโต ----
+            "CAGR รายได้ (%)": sm.get("CAGR รายได้ (%)"),
+            "CAGR กำไรสุทธิ (%)": sm.get("CAGR กำไรสุทธิ (%)"),
+            "CAGR EPS (%)": sm.get("CAGR EPS (%)"),
+            "CAGR FCF (%)": sm.get("CAGR FCF (%)"),
+            "ตลาดคาดโต (%)": (v["อัตราโตที่ตลาดคาดหวัง"] * 100
+                              if v.get("อัตราโตที่ตลาดคาดหวัง") is not None else None),
+
+            # ---- ความสามารถทำกำไร ----
+            "Gross Margin (%)": _last(tb, "Gross Margin"),
+            "Operating Margin (%)": _last(tb, "Operating Margin"),
+            "Net Margin (%)": _last(tb, "Net Margin"),
+            "ROE (%)": _last(tb, "ROE"),
+            "ROA (%)": _last(tb, "ROA"),
+            "ROIC (%)": _last(tb, "ROIC"),
+            "ROE เฉลี่ย (%)": sm.get("ROE เฉลี่ย (%)"),
+            "ROE ต่ำสุด (%)": sm.get("ROE ต่ำสุด (%)"),
+            # ส่วนเบี่ยงเบนต่ำ = ทำกำไรได้สม่ำเสมอ ซึ่งสำคัญกว่าค่าเฉลี่ยสูง ๆ
+            # ที่มาจากปีดีปีร้ายสลับกัน เพราะพยากรณ์อนาคตได้ยากกว่ามาก
+            "ROE ส่วนเบี่ยงเบน (%)": sm.get("ROE ส่วนเบี่ยงเบน (%)"),
+            "ROIC เฉลี่ย (%)": sm.get("ROIC เฉลี่ย (%)"),
+            "Gross Margin เฉลี่ย (%)": sm.get("Gross Margin เฉลี่ย (%)"),
+            "Gross Margin ส่วนเบี่ยงเบน (%)": sm.get("Gross Margin ส่วนเบี่ยงเบน (%)"),
+
+            # ---- คุณภาพกำไร ----
+            "OCF/กำไรสุทธิ เฉลี่ย (x)": sm.get("OCF/กำไรสุทธิ เฉลี่ย (x)"),
+            "ปีที่ FCF เป็นบวก": sm.get("ปีที่ FCF เป็นบวก"),
+            "Accrual Ratio": _last(tb, "Accrual Ratio"),
+            "FCF Margin (%)": _last(tb, "FCF Margin"),
+            "CapEx / OCF": _last(tb, "CapEx / OCF"),
+            "อัตราภาษีที่แท้จริง (%)": _last(tb, "อัตราภาษีที่แท้จริง"),
+
+            # ---- ฐานะการเงิน ----
+            "Current Ratio": _last(tb, "Current Ratio"),
+            "Quick Ratio": _last(tb, "Quick Ratio"),
+            # D/E ปีล่าสุด — เก็บทั้งสองนิยามเพราะให้ภาพต่างกันมาก
+            "D/E": _last(tb, "D/E (หนี้มีดอกเบี้ย)"),
+            "D/E (หนี้สินรวม)": _last(tb, "D/E (หนี้สินรวม)"),
+            "Net Debt/EBITDA": _last(tb, "Net Debt / EBITDA"),
+            "Interest Coverage": _last(tb, "Interest Coverage"),
+
+            # ---- เงินปันผล ----
+            "Payout Ratio (%)": _last(tb, "Payout Ratio"),
+            "เงินปันผลต่อหุ้น": _last(tb, "เงินปันผลต่อหุ้น"),
+            "เงินปันผล / FCF (%)": _last(tb, "เงินปันผล / FCF"),
+
+            # ---- สมมติฐานที่ใช้ประเมิน ----
+            "WACC (%)": (v.get("wacc ที่ใช้") or 0) * 100,
+            "g1 (%)": (v.get("g1 ที่ใช้") or 0) * 100,
+            "g2 (%)": (v.get("g2 ที่ใช้") or 0) * 100,
+            "สัดส่วนมูลค่าสุดท้าย (%)": ((v.get("base_dcf") or {})
+                                        .get("สัดส่วนมูลค่าสุดท้าย", 0) or 0) * 100,
+
+            # ---- ความน่าเชื่อถือของผลลัพธ์ ----
             "ความน่าเชื่อถือ": rel["ระดับ"],
             "คะแนน": rel["คะแนน"],
             "ปีข้อมูล": v["ปีข้อมูล"],
-            "ROE เฉลี่ย (%)": R["summary"].get("ROE เฉลี่ย (%)"),
-            "CAGR รายได้ (%)": R["summary"].get("CAGR รายได้ (%)"),
-            # D/E ปีล่าสุด — ดูจากหนี้ที่มีดอกเบี้ยจริง ไม่ใช่หนี้สินรวม
-            "D/E": _last(R["table"], "D/E (หนี้มีดอกเบี้ย)"),
-            "Net Debt/EBITDA": _last(R["table"], "Net Debt / EBITDA"),
-            "Interest Coverage": _last(R["table"], "Interest Coverage"),
-            "ตลาดคาดโต (%)": (v["อัตราโตที่ตลาดคาดหวัง"] * 100
-                              if v.get("อัตราโตที่ตลาดคาดหวัง") is not None else None),
+            "แหล่งงบ": v.get("แหล่งงบ", "-"),
             "ใช้ DCF": "ใช่" if v.get("ใช้ DCF ได้ไหม") else "ไม่",
             "ปัญหา": "",
         })
@@ -403,20 +468,100 @@ def undervalued(df: pd.DataFrame, min_discount=0.0, min_score=0) -> pd.DataFrame
 # เปรียบเทียบหุ้น 2–10 ตัว
 # ===========================================================================
 
-COMPARE_ROWS = [
-    ("ราคาตลาด", "ราคา", 2),
-    ("มูลค่าที่ประเมินได้", "มูลค่าที่ประเมินได้", 2),
-    ("ส่วนลด/ส่วนเกิน (%)", "ส่วนลด (%)", 1),
-    ("โซนราคา", "โซน", None),
-    ("ความน่าเชื่อถือ", "ความน่าเชื่อถือ", None),
-    ("คะแนนความน่าเชื่อถือ", "คะแนน", 0),
-    ("จำนวนปีข้อมูล", "ปีข้อมูล", 0),
-    ("ROE เฉลี่ย (%)", "ROE เฉลี่ย (%)", 1),
-    ("CAGR รายได้ (%)", "CAGR รายได้ (%)", 1),
-    ("ตลาดคาดให้โต (%)", "ตลาดคาดโต (%)", 1),
-    ("ใช้ DCF ได้ไหม", "ใช้ DCF", None),
-    ("กลุ่มอุตสาหกรรม", "กลุ่ม", None),
+# ตารางเปรียบเทียบ แบ่งเป็นหมวดเพื่อให้อ่านทีละเรื่อง
+# รูปแบบ : (ชื่อหมวด, [(ป้ายที่แสดง, ชื่อคอลัมน์ในข้อมูล, ทศนิยม), ...])
+#
+# ทำไมต้องแบ่งหมวด : ตาราง 40 บรรทัดรวดเดียวอ่านไม่ไหว
+# แต่ถ้าตัดให้เหลือ 12 บรรทัดก็เสียข้อมูลที่อุตส่าห์คำนวณมาแล้ว
+# การแบ่งหมวดให้ทั้งความครบและความอ่านง่ายพร้อมกัน
+COMPARE_SECTIONS = [
+    ("มูลค่าและราคา", [
+        ("ราคาตลาด", "ราคา", 2),
+        ("มูลค่าที่ประเมินได้", "มูลค่าที่ประเมินได้", 2),
+        ("ส่วนลด/ส่วนเกิน (%)", "ส่วนลด (%)", 1),
+        ("โซนราคา", "โซน", None),
+        ("ส่วนเผื่อความปลอดภัย (%)", "ส่วนเผื่อความปลอดภัย (%)", 0),
+        ("มูลค่าตลาด (ล้าน)", "มูลค่าตลาด (ล้าน)", 0),
+    ]),
+    ("อัตราส่วนราคา", [
+        ("P/E", "P/E", 1),
+        ("P/BV", "P/BV", 2),
+        ("P/S", "P/S", 2),
+        ("P/FCF", "P/FCF", 1),
+        ("EV/EBITDA", "EV/EBITDA", 1),
+        ("EV/EBIT", "EV/EBIT", 1),
+        ("Earnings Yield (%)", "Earnings Yield (%)", 2),
+        ("FCF Yield (%)", "FCF Yield (%)", 2),
+    ]),
+    ("การเติบโต", [
+        ("CAGR รายได้ (%)", "CAGR รายได้ (%)", 1),
+        ("CAGR กำไรสุทธิ (%)", "CAGR กำไรสุทธิ (%)", 1),
+        ("CAGR EPS (%)", "CAGR EPS (%)", 1),
+        ("CAGR FCF (%)", "CAGR FCF (%)", 1),
+        ("ตลาดคาดให้โต (%)", "ตลาดคาดโต (%)", 1),
+    ]),
+    ("ความสามารถทำกำไร", [
+        ("Gross Margin (%)", "Gross Margin (%)", 1),
+        ("Operating Margin (%)", "Operating Margin (%)", 1),
+        ("Net Margin (%)", "Net Margin (%)", 1),
+        ("ROE ปีล่าสุด (%)", "ROE (%)", 1),
+        ("ROE เฉลี่ยทั้งช่วง (%)", "ROE เฉลี่ย (%)", 1),
+        ("ROE ต่ำสุด (%)", "ROE ต่ำสุด (%)", 1),
+        ("ROE ส่วนเบี่ยงเบน (%)", "ROE ส่วนเบี่ยงเบน (%)", 1),
+        ("ROA (%)", "ROA (%)", 1),
+        ("ROIC (%)", "ROIC (%)", 1),
+        ("ROIC เฉลี่ย (%)", "ROIC เฉลี่ย (%)", 1),
+    ]),
+    ("คุณภาพกำไร", [
+        ("OCF / กำไรสุทธิ (เท่า)", "OCF/กำไรสุทธิ เฉลี่ย (x)", 2),
+        ("FCF Margin (%)", "FCF Margin (%)", 1),
+        ("ปีที่ FCF เป็นบวก", "ปีที่ FCF เป็นบวก", 0),
+        ("Accrual Ratio", "Accrual Ratio", 3),
+        ("CapEx / OCF", "CapEx / OCF", 2),
+        ("อัตราภาษีที่แท้จริง (%)", "อัตราภาษีที่แท้จริง (%)", 1),
+    ]),
+    ("ฐานะการเงิน", [
+        ("Current Ratio", "Current Ratio", 2),
+        ("Quick Ratio", "Quick Ratio", 2),
+        ("D/E (หนี้มีดอกเบี้ย)", "D/E", 2),
+        ("D/E (หนี้สินรวม)", "D/E (หนี้สินรวม)", 2),
+        ("Net Debt / EBITDA", "Net Debt/EBITDA", 2),
+        ("Interest Coverage", "Interest Coverage", 1),
+    ]),
+    ("เงินปันผล", [
+        ("เงินปันผลต่อหุ้น", "เงินปันผลต่อหุ้น", 4),
+        ("Payout Ratio (%)", "Payout Ratio (%)", 1),
+        ("เงินปันผล / FCF (%)", "เงินปันผล / FCF (%)", 1),
+    ]),
+    ("สมมติฐานที่ใช้ประเมินมูลค่า", [
+        ("WACC (%)", "WACC (%)", 2),
+        ("อัตราโตช่วงแรก g1 (%)", "g1 (%)", 2),
+        ("อัตราโตถาวร g2 (%)", "g2 (%)", 2),
+        ("สัดส่วนมูลค่าสุดท้าย (%)", "สัดส่วนมูลค่าสุดท้าย (%)", 0),
+        ("ใช้ DCF ได้ไหม", "ใช้ DCF", None),
+    ]),
+    ("ความน่าเชื่อถือของผลลัพธ์", [
+        ("ระดับความน่าเชื่อถือ", "ความน่าเชื่อถือ", None),
+        ("คะแนน (เต็ม 100)", "คะแนน", 0),
+        ("จำนวนปีข้อมูล", "ปีข้อมูล", 0),
+        ("แหล่งงบการเงิน", "แหล่งงบ", None),
+        ("กลุ่มอุตสาหกรรม", "กลุ่ม", None),
+    ]),
 ]
+
+# รายการแบบแบนสำหรับโหมดย่อ — ใช้เมื่อผู้ใช้อยากดูเฉพาะหัวข้อสำคัญ
+COMPARE_ROWS = ([("ราคาตลาด", "ราคา", 2),
+                 ("มูลค่าที่ประเมินได้", "มูลค่าที่ประเมินได้", 2),
+                 ("ส่วนลด/ส่วนเกิน (%)", "ส่วนลด (%)", 1),
+                 ("โซนราคา", "โซน", None),
+                 ("P/E", "P/E", 1),
+                 ("P/BV", "P/BV", 2),
+                 ("ROE เฉลี่ย (%)", "ROE เฉลี่ย (%)", 1),
+                 ("CAGR รายได้ (%)", "CAGR รายได้ (%)", 1),
+                 ("D/E (หนี้มีดอกเบี้ย)", "D/E", 2),
+                 ("ความน่าเชื่อถือ", "ความน่าเชื่อถือ", None),
+                 ("คะแนนความน่าเชื่อถือ", "คะแนน", 0),
+                 ("กลุ่มอุตสาหกรรม", "กลุ่ม", None)])
 
 MAX_COMPARE = 10
 MIN_COMPARE = 2
@@ -451,24 +596,42 @@ def compare(tickers, rf=None, mos=None, refresh=False, progress=None):
     ok = ok.set_index("ticker")
     ok = ok.reindex([t for t in tickers if t in ok.index])   # คงลำดับที่ผู้ใช้เลือก
 
-    out = {}
-    for label, col, dec in COMPARE_ROWS:
-        if col not in ok.columns:
-            continue
-        vals = []
-        for t in ok.index:
-            v = ok.loc[t, col]
-            if pd.isna(v):
-                vals.append("—")
-            elif dec is None:
-                vals.append(str(v))
-            else:
-                vals.append(f"{float(v):,.{dec}f}")
-        out[label] = vals
+    def _fmt(t, col, dec):
+        v = ok.loc[t, col]
+        if pd.isna(v):
+            return "—"
+        if dec is None:
+            return str(v)
+        try:
+            return f"{float(v):,.{dec}f}"
+        except (TypeError, ValueError):
+            return str(v)
 
-    table = pd.DataFrame(out, index=ok.index).T
-    table.columns = [f"{t}\n{str(ok.loc[t, 'ชื่อบริษัท'])[:22]}" for t in ok.index]
-    return {"table": table, "raw": raw, "errors": errors,
+    def _build(rows):
+        out = {}
+        for label, col, dec in rows:
+            if col not in ok.columns:
+                continue
+            vals = [_fmt(t, col, dec) for t in ok.index]
+            # แถวที่ไม่มีข้อมูลเลยสักตัว ไม่ต้องแสดง — เปลืองพื้นที่โดยไม่ได้อะไร
+            if all(x == "—" for x in vals):
+                continue
+            out[label] = vals
+        if not out:
+            return pd.DataFrame()
+        tbl = pd.DataFrame(out, index=ok.index).T
+        tbl.columns = [f"{t}\n{str(ok.loc[t, 'ชื่อบริษัท'])[:22]}" for t in ok.index]
+        return tbl
+
+    sections = {}
+    for name, rows in COMPARE_SECTIONS:
+        tbl = _build(rows)
+        if not tbl.empty:
+            sections[name] = tbl
+
+    return {"table": _build(COMPARE_ROWS),        # ตารางย่อ (เข้ากันได้กับของเดิม)
+            "sections": sections,                 # ตารางเต็มแบ่งเป็นหมวด
+            "raw": raw, "errors": errors,
             "winner": _pick_best(ok)}
 
 

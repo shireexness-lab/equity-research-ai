@@ -853,7 +853,22 @@ if MODE.startswith("เปรียบเทียบ"):
                     f"{w['ความน่าเชื่อถือ']})  \n"
                     "การจัดอันดับนี้บอกได้แค่ว่า *ตัวไหนแพงน้อยกว่ากัน* "
                     "ไม่ได้แปลว่าตัวนั้นน่าซื้อ")
-        html_table(res["table"], first_col="หัวข้อ", trim_year=False, fit=True)
+        secs = res.get("sections") or {}
+        view = st.radio(
+            "ระดับรายละเอียด", ["ครบทุกหัวข้อ", "เฉพาะหัวข้อหลัก"],
+            horizontal=True,
+            help="ครบทุกหัวข้อ = แสดงทุกตัวเลขที่ระบบคำนวณไว้แล้ว แบ่งเป็นหมวด")
+
+        if view.startswith("ครบ") and secs:
+            n_rows = sum(len(t) for t in secs.values())
+            st.caption(f"แสดง **{n_rows} หัวข้อ** ใน {len(secs)} หมวด · "
+                       "ทุกตัวเลขคำนวณจากงบการเงินย้อนหลัง ไม่ใช่ค่าสรุปสำเร็จรูป")
+            for name, tbl in secs.items():
+                st.markdown(f"**{name}**")
+                html_table(tbl, first_col="หัวข้อ", trim_year=False, fit=True)
+        else:
+            html_table(res["table"], first_col="หัวข้อ", trim_year=False, fit=True)
+
         for tk, err in res["errors"]:
             st.caption(f"⚠️ {tk} — {err}")
         st.download_button("ดาวน์โหลดผลเปรียบเทียบ (CSV)",
