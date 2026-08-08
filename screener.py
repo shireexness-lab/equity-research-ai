@@ -171,14 +171,55 @@ def quick_screen(tickers, workers=6, progress=None, retries=3) -> pd.DataFrame:
 
 
 # เพดานที่ถือว่า "ผิดปกติจนเชื่อไม่ได้"
-# FCF Yield เกิน 100% แปลว่ากระแสเงินสดอิสระมากกว่ามูลค่าตลาดทั้งบริษัทใน 1 ปี
-# ซึ่งแทบเป็นไปไม่ได้ในเชิงธุรกิจ มักเกิดจากมูลค่าตลาดยุบจนเหลือนิดเดียว
-# หรือมีรายการพิเศษครั้งเดียว (เช่น ขายสินทรัพย์ก้อนใหญ่)
-ABSURD_FCF_YIELD = 100.0
+#
+# FCF Yield ของกิจการปกติอยู่ราว 3–15%
+# ถ้าเกิน 50% มักเป็นเงินสดก้อนเดียวที่ไม่เกิดซ้ำ เช่น
+#   • อสังหาฯ ขายคอนโดค้างสต็อกออกได้ในปีนั้น (สินค้าคงเหลือแปลงเป็นเงินสด)
+#   • ธุรกิจรถเช่า/ลีสซิ่ง ขายรถเก่าออกจากฝูง
+#   • ขายสินทรัพย์ก้อนใหญ่ครั้งเดียว
+# เป็นเงินสดจริง แต่ **ไม่เกิดซ้ำทุกปี** จึงเอามาประเมินมูลค่าต่อเนื่องไม่ได้
+ABSURD_FCF_YIELD = 50.0
 DEFAULT_MIN_MCAP = 1000.0          # ล้าน — ตัดหุ้นเล็กมากที่ตัวเลขผันผวนสุดขั้ว
+MIN_SENSIBLE_PE = 0.5              # P/E ต่ำกว่านี้แทบแน่นอนว่าข้อมูลผิด
 
 
-def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP) -> pd.DataFrame:
+def quality_flags(df, min_mcap=DEFAULT_MIN_MCAP,
+                  max_fcf_yield=ABSURD_FCF_YIELD) -> pd.Series:
+    """
+    ตรวจว่าแต่ละตัวมีจุดที่ต้องระวังอะไรบ้าง — **ไม่ตัดออก แค่ติดธง**
+
+    ปรัชญา : ระบบไม่ควรซ่อนข้อมูลจากผู้ใช้เงียบ ๆ
+    ตัวเลขจริงต้องแสดงเสมอ ส่วนคำเตือนเป็นข้อมูลเพิ่ม ไม่ใช่การตัดสินแทน
+
+    คืน Series ของข้อความเตือน (ว่างเปล่า = ไม่มีจุดต้องระวัง)
+    """
+    if df.empty:
+        return pd.Series(dtype=str)
+    nm = pd.to_numeric(df.get("อัตรากำไรสุทธิ (%)"), errors="coerce")
+    pbv = pd.to_numeric(df.get("P/BV"), errors="coerce")
+    cap = pd.to_numeric(df.get("มูลค่าตลาด (ล้าน)"), errors="coerce")
+    fcy = pd.to_numeric(df.get("FCF Yield (%)"), errors="coerce")
+    pe = pd.to_numeric(df.get("P/E"), errors="coerce")
+
+    out = []
+    for i in df.index:
+        w = []
+        if pd.notna(nm.get(i)) and nm[i] <= 0:
+            w.append("ขาดทุน")
+        if pd.notna(pbv.get(i)) and pbv[i] <= 0:
+            w.append("ส่วนทุนติดลบ")
+        if pd.notna(cap.get(i)) and cap[i] < min_mcap:
+            w.append("มูลค่าตลาดเล็ก")
+        if pd.notna(fcy.get(i)) and abs(fcy[i]) > max_fcf_yield:
+            w.append("FCF ผิดปกติ")
+        if pd.notna(pe.get(i)) and 0 < pe[i] < MIN_SENSIBLE_PE:
+            w.append("P/E ผิดปกติ")
+        out.append(" · ".join(w))
+    return pd.Series(out, index=df.index)
+
+
+def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP,
+                  max_fcf_yield=ABSURD_FCF_YIELD) -> pd.DataFrame:
     """
     ตัด "หุ้นที่ตัวเลขดูดีเพราะกิจการพัง" ออกก่อนคัดกรองจริง
 
@@ -192,7 +233,8 @@ def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP) -> pd.DataFrame:
       • ขาดทุนสุทธิ (อัตรากำไรสุทธิติดลบ)
       • ส่วนของผู้ถือหุ้นติดลบ (P/BV ≤ 0)
       • มูลค่าตลาดต่ำกว่าที่กำหนด
-      • FCF Yield สูงเกินจริง (> 100%)
+      • FCF Yield สูงเกินจริง (ค่าเริ่มต้น > 50%)
+      • P/E ต่ำกว่า 0.5 (แทบแน่นอนว่าข้อมูลผิด)
     """
     if df.empty:
         return df
@@ -205,7 +247,10 @@ def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP) -> pd.DataFrame:
     m &= nm.isna() | (nm > 0)          # ไม่มีข้อมูลยังผ่าน แต่ถ้ารู้ว่าขาดทุนให้ตัด
     m &= pbv.isna() | (pbv > 0)        # ส่วนทุนติดลบ = ตัด
     m &= cap.isna() | (cap >= min_mcap)
-    m &= fcy.isna() | (fcy.abs() <= ABSURD_FCF_YIELD)
+    m &= fcy.isna() | (fcy.abs() <= max_fcf_yield)
+
+    pe = pd.to_numeric(df.get("P/E"), errors="coerce")
+    m &= pe.isna() | (pe >= MIN_SENSIBLE_PE)      # P/E 0.0x = ข้อมูลเสีย
     return df[m].reset_index(drop=True)
 
 

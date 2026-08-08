@@ -320,7 +320,7 @@ except Exception:
 # โหมดคัดกรองทั้งตลาด (ชั้นที่ 1 — เร็ว)
 # ---------------------------------------------------------------------------
 if MODE.startswith("คัดกรอง"):
-    from screener import basic_quality, preset, quick_filter, quick_screen
+    from screener import preset, quality_flags, quick_filter, quick_screen
 
     st.info("**ชั้นคัดกรองเร็ว** — ดึงเฉพาะตัวเลขสรุป (P/E, P/BV, ROE) "
             "ไม่ทำ DCF จึงเร็วกว่าราว 20 เท่า ใช้ได้กับทั้งตลาด\n\n"
@@ -365,17 +365,28 @@ if MODE.startswith("คัดกรอง"):
         universe = full[:cap] if cap else full
         st.caption(f"จะคัดกรอง {len(universe):,} ตัว")
 
-    qa1, qa2 = st.columns([3, 1])
+    qa1, qa2 = st.columns([2, 1])
     with qa1:
-        quality = st.checkbox(
-            "🛡️ ตัดหุ้นที่ตัวเลขดูดีเพราะกิจการพัง (แนะนำให้เปิดไว้)", value=True,
-            help="ตัดบริษัทที่ขาดทุน · ส่วนของผู้ถือหุ้นติดลบ · มูลค่าตลาดเล็กเกินไป "
-                 "· FCF Yield สูงเกินจริง (>100%)\n\n"
-                 "อัตราส่วนคำนวณจาก เศษ ÷ ส่วน ถ้า 'ส่วน' ยุบลงมาก "
-                 "อัตราส่วนจะดูสวยผิดปกติทั้งที่กิจการกำลังแย่")
+        qmode = st.radio(
+            "หุ้นที่มีจุดต้องระวัง (ขาดทุน · ส่วนทุนติดลบ · ตัวเลขผิดปกติ)",
+            ["⚠️ แสดงพร้อมติดธงเตือน", "🛡️ ตัดออกจากตาราง", "แสดงทั้งหมด ไม่ติดธง"],
+            horizontal=True,
+            help="ค่าตัวเลขในตารางเป็นค่าจริงของหุ้นแต่ละตัวเสมอ "
+                 "ไม่ว่าจะเลือกแบบไหน — ตัวเลือกนี้กำหนดแค่ว่าจะ "
+                 "แสดง ซ่อน หรือติดธงเตือนหุ้นที่มีจุดต้องระวัง")
+    quality = not qmode.startswith("แสดงทั้งหมด")
     with qa2:
         q_cap = st.number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e6, 1000.0, 250.0,
                                 disabled=not quality)
+    if quality:
+        q_fcy = st.slider(
+            "เพดาน FCF Yield ที่ยอมรับได้ (%)", 10, 200, 50, 5,
+            help="กิจการปกติมี FCF Yield ราว 3-15%\n\n"
+                 "ถ้าเกิน 50% มักเป็นเงินสดก้อนเดียวที่ไม่เกิดซ้ำ เช่น "
+                 "อสังหาฯ ขายคอนโดค้างสต็อก หรือธุรกิจรถเช่าขายรถเก่าออก "
+                 "— เป็นเงินสดจริงแต่ปีหน้าไม่มีอีก")
+    else:
+        q_fcy = 1000
 
     st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
     g = st.columns(9)
@@ -416,7 +427,13 @@ if MODE.startswith("คัดกรอง"):
     qdf = st.session_state.get("quick_df")
     if qdf is not None and not qdf.empty:
         got = qdf[qdf["ปัญหา"].eq("")]
-        base = basic_quality(qdf, min_mcap=q_cap) if quality else qdf
+        # ติดธงเตือนเสมอ — ค่าตัวเลขไม่ถูกแตะต้อง
+        qdf = qdf.copy()
+        qdf["⚠️"] = quality_flags(qdf, min_mcap=q_cap, max_fcf_yield=q_fcy) if quality else ""
+        if qmode.startswith("🛡️"):
+            base = qdf[qdf["⚠️"].eq("") & qdf["ปัญหา"].eq("")].reset_index(drop=True)
+        else:
+            base = qdf[qdf["ปัญหา"].eq("")].reset_index(drop=True)
         res = quick_filter(base, max_pe=f_pe or None, max_pbv=f_pbv or None,
                            min_roe=f_roe or None, min_fcf_yield=f_fcf or None,
                            min_div=f_div or None, min_mcap=f_cap or None,
@@ -479,20 +496,25 @@ if MODE.startswith("คัดกรอง"):
         rate = len(got) / len(qdf) * 100 if len(qdf) else 0
         metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}",
                     f"{rate:.0f}%", "#2e7d32" if rate >= 85 else "#ef6c00")
-        metric_card(k[1], "ผ่านคุณภาพขั้นต่ำ",
-                    f"{len(base):,} ตัว" if quality else "ไม่ได้กรอง")
+        n_flag = int((base["⚠️"] != "").sum()) if "⚠️" in base.columns else 0
+        metric_card(k[1], "มีจุดต้องระวัง",
+                    f"{n_flag:,} ตัว" if quality else "ไม่ได้ตรวจ",
+                    "ซ่อนไว้" if qmode.startswith("🛡️") else
+                    ("ติดธงไว้" if quality else None))
         metric_card(k[2], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
+        # ใช้ "ค่ากลาง" ไม่ใช่ "ต่ำสุด" — ค่าต่ำสุดมักเป็นข้อมูลเสียเพียงตัวเดียว
         pe_pos = pd.to_numeric(res.get("P/E"), errors="coerce")
         pe_pos = pe_pos[pe_pos > 0] if pe_pos is not None else pd.Series(dtype=float)
-        metric_card(k[3], "P/E ต่ำสุดที่ผ่าน",
-                    f"{pe_pos.min():,.1f}" if len(pe_pos) else "—")
+        metric_card(k[3], "P/E ค่ากลางของกลุ่มที่ผ่าน",
+                    f"{pe_pos.median():,.1f}" if len(pe_pos) else "—",
+                    "(ตารางแสดงค่าจริงรายตัว)")
 
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
         else:
             cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "P/S", "D/E",
                     "ROE (%)", "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)",
-                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
+                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม", "⚠️"]
             show = res[[c for c in cols if c in res.columns]].head(200).copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
