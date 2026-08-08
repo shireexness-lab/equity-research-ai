@@ -447,6 +447,195 @@ except Exception:
 # ---------------------------------------------------------------------------
 # โหมดรายการ Strong Buy — อ่านผลที่วิเคราะห์ลึกไว้แล้ว
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# แผงสั่งอัปเดตผลวิเคราะห์ลึก
+#
+# หลักคิด : หน้าเว็บ **ไม่วิเคราะห์เอง**
+# มันแค่สั่งให้เครื่องเปิดโปรแกรมแยกออกไปทำ แล้วคอยอ่านความคืบหน้า
+# เพราะงานนี้ใช้เวลาหลายชั่วโมง ถ้าทำในหน้าเว็บตรง ๆ จะค้างและปิดแท็บไม่ได้เลย
+# ---------------------------------------------------------------------------
+
+# หุ้นแต่ละตัวใช้เวลาวิเคราะห์ราวเท่าไร — ใช้ประมาณเวลาให้ผู้ใช้ตัดสินใจ
+SEC_PER_STOCK = 30
+
+MARKET_SIZE = {"thai": 866, "us": 10398}
+
+
+def _fmt_hours(n_stocks: int) -> str:
+    h = n_stocks * SEC_PER_STOCK / 3600
+    if h < 1:
+        return f"{h*60:.0f} นาที"
+    return f"{h:.1f} ชั่วโมง"
+
+
+@st.fragment(run_every=5)
+def _job_progress(market: str):
+    """วาดความคืบหน้าของงานที่กำลังทำ — รีเฟรชเองทุก 5 วินาที
+
+    ใช้ fragment เพื่อให้รีเฟรชเฉพาะกล่องนี้ ไม่ต้องวาดทั้งหน้าใหม่
+    ถ้าวาดทั้งหน้า ตารางหลายพันแถวจะกระพริบทุก 5 วินาที
+    """
+    import runner as RUN
+    s = RUN.status(market)
+    if not s["มีงาน"]:
+        return
+
+    log = s.get("log", "")
+    pg = RUN.progress_from_log(log)
+    mins = s.get("นาทีที่ผ่านไป") or 0
+
+    if s["กำลังทำงาน"]:
+        if pg:
+            i, total = pg
+            st.progress(min(i / max(total, 1), 1.0),
+                        text=f"วิเคราะห์แล้ว {i:,} จาก {total:,} ตัว "
+                             f"· ผ่านไป {mins:.0f} นาที")
+        else:
+            st.progress(0.0, text=f"กำลังเตรียมรายชื่อ · ผ่านไป {mins:.0f} นาที")
+        st.caption("ปิดแท็บนี้ได้ งานจะเดินต่อเอง — กลับมาเปิดใหม่แล้วดูได้")
+    else:
+        done = "git push" in log and "error" not in log.lower()
+        st.success(f"งานรอบล่าสุดจบแล้ว (ใช้เวลา {mins:.0f} นาที)"
+                   + ("  ส่งขึ้นเว็บเรียบร้อย" if done else ""))
+
+    with st.expander("ดูรายละเอียดที่โปรแกรมกำลังทำ", expanded=False):
+        st.code(log or "(ยังไม่มีข้อความ)", language=None)
+
+
+def deep_update_panel(market: str):
+    """ปุ่มสั่งอัปเดตผลวิเคราะห์ลึกแบบกดเอง"""
+    import runner as RUN
+    import tools_deep_scan as DS
+
+    total = MARKET_SIZE.get(market, 0)
+    name_th = "หุ้นไทย" if market == "thai" else "หุ้นสหรัฐ"
+
+    if not RUN.is_local():
+        # อยู่บนเว็บ — สั่งดึงข้อมูลไม่ได้ ต้องบอกให้ชัดว่าทำไม
+        with st.expander(f"⚙️ อัปเดตผลวิเคราะห์ {name_th}", expanded=False):
+            st.warning(
+                "**สั่งอัปเดตจากหน้าเว็บนี้ไม่ได้**  \n"
+                "Yahoo ปิดกั้นการดึงข้อมูลจากเครื่องของศูนย์ข้อมูล "
+                "(ซึ่งเว็บนี้ทำงานอยู่) และเครื่องจะถูกล้างทุกครั้งที่อัปเดตโค้ด "
+                "งานที่รันค้างไว้จะหายหมด\n\n"
+                "**ให้เปิดโปรแกรมบน MacBook แล้วกดปุ่มจากตรงนั้นแทน** :\n\n"
+                "```\neq\nstreamlit run app.py\n```\n"
+                "หรือสั่งจาก Terminal ตรง ๆ :\n\n"
+                f"```\npython3 tools_deep_scan.py --{market} --all "
+                f"--hours 6 --refresh-days 3\n```")
+        return
+
+    st.markdown("")
+    with st.expander(f"⚙️ อัปเดตผลวิเคราะห์ {name_th}  (กดเอง)", expanded=False):
+        s = RUN.status(market)
+        busy = s["กำลังทำงาน"]
+
+        c1, c2 = st.columns([3, 2])
+        scope_lbl = c1.radio(
+            "จะอัปเดตแค่ไหน",
+            [f"ทั้งตลาด {total:,} ตัว",
+             "เฉพาะตัวที่ผลเก่าแล้ว",
+             "เฉพาะตัวคะแนนสูง 300 ตัวแรก"],
+            key=f"scope_{market}", disabled=busy,
+            captions=[
+                f"ทำต่อจากที่ค้างไว้ ตัวที่เคยทำแล้วจะไม่ทำซ้ำ "
+                f"(ถ้าเริ่มจากศูนย์ใช้เวลาราว {_fmt_hours(total)})",
+                "ตัวที่วิเคราะห์ไว้เกินจำนวนวันที่กำหนด จะถูกดึงมาทำใหม่",
+                "คัดกรองเร็วทั้งตลาดก่อน แล้ววิเคราะห์ลึกเฉพาะหัวตาราง"])
+
+        hours = c2.slider("หยุดเองเมื่อครบกี่ชั่วโมง", 0.5, 12.0, 6.0, 0.5,
+                          key=f"hrs_{market}", disabled=busy,
+                          help="หมดเวลาแล้วโปรแกรมจะบันทึกผลที่ทำได้แล้วหยุด "
+                               "กดใหม่รอบหน้าจะทำต่อจากจุดเดิม ไม่เริ่มใหม่")
+        days = c2.number_input("ถือว่าผลเก่าเมื่อเกินกี่วัน", 1, 30, 3,
+                               key=f"days_{market}", disabled=busy)
+        push = c2.checkbox("เสร็จแล้วส่งขึ้นเว็บให้เลย", value=True,
+                           key=f"push_{market}", disabled=busy,
+                           help="commit + push ให้อัตโนมัติ "
+                                "เพื่อให้เปิดดูจากมือถือได้")
+
+        scope = ("refresh" if scope_lbl.startswith("เฉพาะตัวที่ผลเก่า")
+                 else "top" if scope_lbl.startswith("เฉพาะตัวคะแนน") else "all")
+
+        # ---- บอกล่วงหน้าว่ารอบนี้จะทำกี่ตัว ----
+        # ผู้ใช้ควรรู้ก่อนกดว่าจะได้อะไร ไม่ใช่กดแล้วรอลุ้น
+        try:
+            uni = (list(__import__("tickers").thai_universe()) if market == "thai"
+                   else list(__import__("tickers").us_tickers().keys()))
+            q = DS.build_queue(uni, market,
+                               refresh_days=days if scope == "refresh" else None)
+            if scope == "top":
+                st.caption("จะคัดกรองเร็วทั้งตลาดก่อน แล้ววิเคราะห์ลึก 300 ตัวแรก")
+            elif not q["todo"]:
+                st.success("ครบและยังไม่ถึงรอบอัปเดต — ยังไม่ต้องรันก็ได้")
+            else:
+                st.caption(
+                    f"รอบนี้มีคิว **{len(q['todo']):,} ตัว** "
+                    f"(ทำไปแล้ว {q['ทำแล้ว']:,} จาก {q['ทั้งหมด']:,}) "
+                    f"· ทำจนครบใช้เวลาราว {_fmt_hours(len(q['todo']))} "
+                    f"· งบเวลารอบนี้ {hours:g} ชม. "
+                    f"จะได้ราว {int(hours*3600/SEC_PER_STOCK):,} ตัว")
+        except Exception as e:
+            st.caption(f"(ประมาณจำนวนคิวไม่ได้ : {type(e).__name__})")
+
+        b1, b2 = st.columns([1, 1])
+        if b1.button("▶️ เริ่มอัปเดต", type="primary", disabled=busy,
+                     use_container_width=True, key=f"go_{market}"):
+            RUN.start(market, scope=scope, hours=hours,
+                      refresh_days=days if scope == "refresh" else None,
+                      top=300, push=push)
+            st.rerun()
+        if b2.button("⏹ หยุดงานนี้", disabled=not busy,
+                     use_container_width=True, key=f"stop_{market}",
+                     help="ผลที่ทำไปแล้วไม่หาย รอบหน้าทำต่อจากจุดที่ค้าง"):
+            RUN.stop(market)
+            st.rerun()
+
+        _job_progress(market)
+
+
+def deep_changes_panel(market: str):
+    """แสดงว่ารอบล่าสุดมีอะไรเปลี่ยนไปบ้าง"""
+    import tools_deep_scan as DS
+    try:
+        ch, cmeta = DS.load_changes(market)
+    except Exception:
+        return
+    if ch is None or ch.empty:
+        return
+
+    lv = ch[ch["การเปลี่ยนแปลง"].str.startswith(("⬆️", "⬇️"))]
+    pr = ch[ch["การเปลี่ยนแปลง"].str.startswith(("💰", "💸"))]
+    nw = ch[ch["การเปลี่ยนแปลง"].str.startswith("🆕")]
+
+    head = (f"🔔 เปลี่ยนจากรอบก่อน {len(ch):,} ตัว"
+            f"   —   คำแนะนำเปลี่ยนระดับ {len(lv):,} · "
+            f"ราคาขยับแรง {len(pr):,} · เข้าใหม่ {len(nw):,}")
+
+    with st.expander(head, expanded=bool(len(lv))):
+        st.caption(f"เทียบกับผลรอบก่อนหน้า · บันทึกเมื่อ "
+                   f"{cmeta.get('บันทึกเมื่อ','-')[:16]}  \n"
+                   "**คำแนะนำเปลี่ยนระดับ** คือสิ่งที่ควรดูก่อน — "
+                   "ราคาขยับเฉย ๆ อาจเป็นความผันผวนปกติ")
+        pick = st.radio("ดูกลุ่มไหน",
+                        [f"เปลี่ยนระดับ ({len(lv):,})",
+                         f"ราคาขยับแรง ({len(pr):,})",
+                         f"เข้าใหม่ ({len(nw):,})",
+                         f"ทั้งหมด ({len(ch):,})"],
+                        horizontal=True, key=f"chpick_{market}")
+        sel = (lv if pick.startswith("เปลี่ยนระดับ") else
+               pr if pick.startswith("ราคาขยับ") else
+               nw if pick.startswith("เข้าใหม่") else ch)
+        if sel.empty:
+            st.info("ไม่มีรายการในกลุ่มนี้")
+            return
+        show = sel.copy()
+        show.index = [str(i) for i in range(1, len(show) + 1)]
+        html_table(show, first_col="ลำดับ", trim_year=False, fit=True,
+                   max_height=460, left_cols=("ชื่อบริษัท", "การเปลี่ยนแปลง"),
+                   sign_cols=("ส่วนลดขยับ",))
+
+
 if MODE.startswith("🏆"):
     import tools_deep_scan as DS
 
@@ -471,6 +660,9 @@ if MODE.startswith("🏆"):
         _deep.clear()
         st.rerun()
 
+    deep_update_panel(market)
+    deep_changes_panel(market)
+
     ddf, dmeta = _deep(market)
 
     if ddf is None or ddf.empty:
@@ -488,26 +680,27 @@ if MODE.startswith("🏆"):
         ok = ddf[ddf["ปัญหา"].eq("")] if "ปัญหา" in ddf.columns else ddf
         age = dmeta.get("อายุ (ชม.)", 0)
         src_th = dmeta.get("ที่มา (ไทย)", "-")
+        # ---- ครอบคลุมตลาดไปแล้วกี่เปอร์เซ็นต์ ----
+        # หุ้นสหรัฐมี 10,398 ตัว รอบเดียววิเคราะห์ไม่หมดแน่นอน
+        # การเห็นตัวเลขไม่ครบจึงเป็นเรื่องปกติ ไม่ใช่ความผิดพลาด
+        # แต่ต้องบอกให้ชัดว่าครอบคลุมแค่ไหน จะได้ไม่เข้าใจว่า
+        # "ทั้งตลาดมีแค่นี้" เหมือนครั้งก่อนที่เห็น 150 แล้วนึกว่าหายไป
+        full = MARKET_SIZE.get(market, len(ddf))
+        pct = len(ddf) / full * 100 if full else 100
         rf2.caption(
-            f"ในไฟล์มี **{len(ddf):,} ตัว** · วิเคราะห์สำเร็จ {len(ok):,} ตัว "
+            f"ในไฟล์มี **{len(ddf):,} ตัว** จากทั้งตลาด {full:,} ตัว "
+            f"(**{pct:.0f}%**) · วิเคราะห์สำเร็จ {len(ok):,} ตัว "
             f"· บันทึกเมื่อ {dmeta.get('บันทึกเมื่อ','-')[:16]} "
             f"({age:.0f} ชม.ที่แล้ว) · อ่านจาก **{src_th}**")
 
-        # ---- เตือนเมื่อจำนวนไม่ตรงกับที่คาด ----
-        # กรณีที่เกิดจริงบ่อยที่สุด : รันบน MacBook แล้วยังไม่ได้ push
-        # เว็บบน Streamlit Cloud จึงยังเห็นไฟล์เก่าที่ push ไว้รอบก่อน
-        expect = {"thai": 866, "us": 39}.get(market)
-        if expect and len(ddf) < expect * 0.5:
-            st.warning(
-                f"**ไฟล์นี้มีแค่ {len(ddf):,} ตัว แต่ตลาด{market}มี {expect:,} ตัว**  \n"
-                f"อ่านจาก *{src_th}* บันทึกเมื่อ "
-                f"{dmeta.get('บันทึกเมื่อ','-')[:16]}\n\n"
-                "**สาเหตุที่พบบ่อยที่สุด** — รันวิเคราะห์บน MacBook แล้ว "
-                "**ยังไม่ได้ push ขึ้น GitHub** เว็บจึงยังเห็นไฟล์เก่ารอบก่อน  \n"
-                "แก้โดยรันบน MacBook :\n\n"
-                "```\neq\ngit add data/snapshots\n"
-                "git commit -m 'ผลวิเคราะห์ลึกล่าสุด'\ngit push\n```\n"
-                "รอ 1–2 นาทีให้เว็บโหลดใหม่ แล้วกด **🔄 โหลดข้อมูลใหม่**")
+        if pct < 99:
+            st.info(
+                f"**วิเคราะห์ไปแล้ว {pct:.0f}% ของตลาด** — "
+                f"เหลืออีก {full - len(ddf):,} ตัว  \n"
+                "ระบบทยอยทำทีละรอบโดยตั้งใจ เพราะหุ้น 1 ตัวใช้เวลาราว 30 วินาที "
+                f"ทั้งตลาดจึงต้องใช้ {_fmt_hours(full)}  \n"
+                "กด **⚙️ อัปเดตผลวิเคราะห์** ด้านบนเพื่อทำต่อจากจุดที่ค้าง "
+                "(ตัวที่ทำแล้วจะไม่ทำซ้ำ)")
 
         # ---- ตรวจสุขภาพผลลัพธ์ก่อนแสดง ----
         dg = DS.diagnose(ddf)
