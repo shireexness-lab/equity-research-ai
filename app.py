@@ -232,7 +232,7 @@ SECTION_MARK = "§ "
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
                max_height=None, link_cols=(), sort_cols=(),
                cur_sort=None, cur_asc=True, fit=False, left_cols=(),
-               dec_cols=None, sign_cols=(), sign_mask=None):
+               dec_cols=None, sign_cols=(), sign_mask=None, dec_rows=None):
     """
     แสดง DataFrame เป็นตาราง HTML
 
@@ -281,7 +281,10 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
         for c in df.columns:
             # จำนวนทศนิยมรายคอลัมน์ — คะแนนกับจำนวนปีเป็นจำนวนเต็ม
             # ถ้าแสดง 40.00 หรือ 4.00 จะดูเหมือนค่าที่วัดละเอียด ทั้งที่เป็นการนับ
-            val = _cell(df.loc[name, c], (dec_cols or {}).get(c, dec))
+            # ลำดับความสำคัญ : ทศนิยมรายบรรทัด > รายคอลัมน์ > ค่าเริ่มต้น
+            # บรรทัดต่อหุ้นต้องการทศนิยม 2 ตำแหน่ง ขณะที่ทั้งตารางใช้ 0
+            _d = (dec_rows or {}).get(name, (dec_cols or {}).get(c, dec))
+            val = _cell(df.loc[name, c], _d)
             if c in left_cols:
                 h.append(f"<td class='l'>{val}</td>")
                 continue
@@ -1549,8 +1552,11 @@ with t2:
     show_chart(RP.chart_margins(R))
     show_chart(RP.chart_returns(R))
     show_chart(RP.chart_cashflow(R))
-    st.markdown("**งบกำไรขาดทุน (ล้าน)**")
-    html_table(S["income"] / 1e6, dec=0)
+    st.markdown(f"**งบกำไรขาดทุน** — หน่วยล้าน {cur} "
+                f"ยกเว้นกำไรต่อหุ้นซึ่งเป็น {cur} ต่อหุ้น")
+    from statements import scale_for_display
+    _inc, _dr = scale_for_display(S["income"])
+    html_table(_inc, dec=0, dec_rows=_dr)
 
 with t3:
     st.caption("บรรทัดที่ขึ้น — แปลว่างบของบริษัทนี้ไม่มีรายการนั้น "

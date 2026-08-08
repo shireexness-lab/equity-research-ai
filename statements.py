@@ -32,6 +32,37 @@ from data_layer import find_row, get_stock_data, get_years
 # ชื่อบรรทัดสำคัญ — เขียนหลายชื่อเผื่อ yfinance ตั้งชื่อต่างกันในแต่ละหุ้น
 # ---------------------------------------------------------------------------
 
+# บรรทัดที่เป็น "ต่อหุ้น" — ห้ามหารด้วยล้านเหมือนบรรทัดอื่น
+#
+# ทำไมต้องมีรายชื่อนี้ : ตารางงบแสดงหน่วยเป็นล้านบาท จึงหารทั้งตารางด้วย 1e6
+# แต่กำไรต่อหุ้นเป็นบาทต่อหุ้นอยู่แล้ว ถ้าหารด้วยล้านซ้ำ EPS 0.42 บาท
+# จะกลายเป็น 0.00000042 แล้วปัดแสดงเป็น 0 หรือ "<1" ซึ่งอ่านผิดความหมายทั้งหมด
+PER_SHARE_LINES = {
+    "กำไรต่อหุ้น (Diluted)",
+    "กำไรต่อหุ้น (Basic)",
+    "เงินปันผลต่อหุ้น",
+    "มูลค่าทางบัญชีต่อหุ้น",
+}
+
+
+def scale_for_display(df, unit=1e6, dec_normal=0, dec_per_share=2):
+    """
+    เตรียมงบให้พร้อมแสดงผล — หารเฉพาะบรรทัดที่เป็นจำนวนเงิน
+
+    คืน (DataFrame ที่ปรับหน่วยแล้ว, dict ทศนิยมรายบรรทัด)
+    """
+    import pandas as _pd
+    out = df.copy()
+    dec_rows = {}
+    for name in out.index:
+        if name in PER_SHARE_LINES:
+            dec_rows[name] = dec_per_share          # ไม่หาร เก็บค่าเดิม
+        else:
+            out.loc[name] = _pd.to_numeric(out.loc[name], errors="coerce") / unit
+            dec_rows[name] = dec_normal
+    return out, dec_rows
+
+
 KEY_INCOME_LINES = [
     ("รายได้รวม",            ["Total Revenue", "Operating Revenue"]),
     ("ต้นทุนขาย",            ["Cost Of Revenue", "Reconciled Cost Of Revenue"]),

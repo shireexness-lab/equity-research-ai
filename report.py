@@ -375,7 +375,8 @@ def fmt(x, dec=2, dash="—"):
     return f"{x:,.{dec}f}"
 
 
-def table_html(df: pd.DataFrame, units=None, first_col="รายการ", dec=2) -> str:
+def table_html(df: pd.DataFrame, units=None, first_col="รายการ", dec=2,
+               dec_rows=None) -> str:
     """แปลง DataFrame เป็นตาราง HTML"""
     cols = [str(c)[:4] for c in df.columns]
     h = ["<table><thead><tr><th class='lbl'>" + esc(first_col) + "</th>"]
@@ -393,7 +394,9 @@ def table_html(df: pd.DataFrame, units=None, first_col="รายการ", dec
             elif u in ("วัน", "ล้าน"):
                 cell = f"{val:,.0f}"
             else:
-                cell = f"{val:,.{dec}f}"
+                # ทศนิยมรายบรรทัดมาก่อนค่าเริ่มต้น — บรรทัดต่อหุ้นต้องการ 2 ตำแหน่ง
+                _d = (dec_rows or {}).get(name, dec)
+                cell = f"{val:,.{_d}f}"
             h.append(f"<td>{cell}</td>")
         h.append("</tr>")
     h.append("</tbody></table>")
@@ -561,8 +564,12 @@ def build_html(data, S, R, v, b, ext=None) -> str:
     parts.append("<h2>2. ผลประกอบการย้อนหลัง</h2>")
     parts.append(img(chart_revenue_profit(R)))
     parts.append(img(chart_margins(R)))
-    parts.append("<h3>งบกำไรขาดทุน (หน่วย: ล้าน)</h3>")
-    parts.append(table_html(S["income"] / 1e6, dec=0))
+    parts.append("<h3>งบกำไรขาดทุน</h3>")
+    parts.append(f"<div class='cap'>หน่วยล้าน {cur} "
+                 f"ยกเว้นกำไรต่อหุ้นซึ่งเป็น {cur} ต่อหุ้น</div>")
+    from statements import scale_for_display
+    _inc, _dr = scale_for_display(S["income"])
+    parts.append(table_html(_inc, dec=0, dec_rows=_dr))
     parts.append("<div class='pagebreak'></div>")
 
     # ---------- ผลตอบแทนและกระแสเงินสด ----------
