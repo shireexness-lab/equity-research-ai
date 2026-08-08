@@ -227,7 +227,8 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
             val = _cell(df.loc[name, c], dec)
             if c in link_cols and val != "—":
                 # target="_self" = เปิดในแท็บเดิม ไม่เด้งแท็บใหม่
-                val = (f"<a class='tk' target='_self' "
+                # เปิดแท็บใหม่ เพื่อไม่ให้ผลคัดกรองในแท็บเดิมหายไป
+                val = (f"<a class='tk' target='_blank' rel='noopener' "
                        f"href='?t={str(df.loc[name, c]).strip()}'>{val}</a>")
             h.append(f"<td>{val}</td>")
         h.append("</tr>")
@@ -413,28 +414,57 @@ if MODE.startswith("คัดกรอง"):
                     "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)", "ปันผล (%)",
                     "มูลค่าตลาด (ล้าน)", "ราคา", "ticker"]
         ASC_BY_DEFAULT = {"P/E", "P/BV", "P/S", "D/E", "ticker"}
+        # ---------- แถวปุ่มจัดเรียง ----------
+        # ใช้ปุ่มของ Streamlit ไม่ใช่ลิงก์ HTML
+        # เหตุผล : ลิงก์ทำให้เบราว์เซอร์โหลดหน้าใหม่ -> Streamlit สร้าง session ใหม่
+        #          -> ผลคัดกรองที่ใช้เวลาดึงมาหลายนาทีหายหมด ต้องเริ่มใหม่
+        #          ปุ่มทำงานภายในหน้าเดิม ข้อมูลจึงอยู่ครบ
         st.session_state.setdefault("sort_col", "P/E")
-        st.session_state.setdefault("sort_dir", "น้อย → มาก")
-        if st.session_state["sort_col"] not in SORTABLE:
-            SORTABLE.append(st.session_state["sort_col"])
-        s1, s2 = st.columns([2, 1])
-        with s1:
-            sort_col = st.selectbox("จัดเรียงตาม", SORTABLE, key="sort_col")
-        with s2:
-            order = st.radio("ลำดับ", ["น้อย → มาก", "มาก → น้อย"],
-                             key="sort_dir", horizontal=True,
-                             label_visibility="collapsed")
-        st.caption("💡 กดที่ **หัวตาราง** ด้านล่างเพื่อจัดเรียงได้เลย "
-                   "· กดคอลัมน์เดิมซ้ำเพื่อสลับทิศทาง")
-        asc = order.startswith("น้อย")
+        st.session_state.setdefault("sort_asc", True)
+
+        def _sort_by(c):
+            """กดคอลัมน์เดิมซ้ำ = สลับทิศทาง · กดคอลัมน์ใหม่ = ใช้ทิศทางที่เหมาะกับตัวเลขนั้น"""
+            if st.session_state["sort_col"] == c:
+                st.session_state["sort_asc"] = not st.session_state["sort_asc"]
+            else:
+                st.session_state["sort_col"] = c
+                st.session_state["sort_asc"] = c in ASC_BY_DEFAULT
+
+        st.markdown("**จัดเรียงตาม** (กดซ้ำที่ปุ่มเดิมเพื่อสลับทิศทาง)")
+        for row in (SORTABLE[:6], SORTABLE[6:]):
+            bc = st.columns(len(row))
+            for col, c in zip(bc, row):
+                cur = st.session_state["sort_col"] == c
+                mark = ("  ▲" if st.session_state["sort_asc"] else "  ▼") if cur else ""
+                col.button(f"{c}{mark}", key=f"sb_{c}", on_click=_sort_by, args=(c,),
+                           type="primary" if cur else "secondary",
+                           use_container_width=True)
+
+        sort_col = st.session_state["sort_col"]
+        asc = st.session_state["sort_asc"]
+        order = "น้อย → มาก" if asc else "มาก → น้อย"
+
+        # อัตราส่วนราคาที่ "ติดลบ" ไม่ได้แปลว่าถูก
+        #   P/E ติดลบ  = ขาดทุน
+        #   P/BV ติดลบ = ส่วนของผู้ถือหุ้นติดลบ (ขาดทุนสะสมจนทุนหมด)
+        #   P/S ติดลบ  = รายได้ติดลบ
+        # ถ้าปล่อยให้เรียงตามค่าจริง บริษัทที่มีปัญหาหนักที่สุดจะลอยขึ้นอันดับ 1
+        # จึงผลักค่าที่ไม่เป็นบวกไปท้ายตารางเหมือนค่าว่าง
+        POSITIVE_ONLY = {"P/E", "P/BV", "P/S", "EV/EBITDA"}
         if sort_col in res.columns:
-            res = res.sort_values(sort_col, ascending=asc,
-                                  na_position="last").reset_index(drop=True)
+            key = pd.to_numeric(res[sort_col], errors="coerce")
+            if sort_col in POSITIVE_ONLY:
+                key = key.where(key > 0)          # ค่า <= 0 ถือเป็น "ไม่มีข้อมูล"
+            res = (res.assign(_k=key)
+                      .sort_values("_k", ascending=asc, na_position="last")
+                      .drop(columns="_k").reset_index(drop=True))
         k = st.columns(3)
         metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}")
         metric_card(k[1], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
+        pe_pos = pd.to_numeric(res.get("P/E"), errors="coerce")
+        pe_pos = pe_pos[pe_pos > 0] if pe_pos is not None else pd.Series(dtype=float)
         metric_card(k[2], "P/E ต่ำสุดที่ผ่าน",
-                    f"{res['P/E'].min():,.1f}" if len(res) else "—")
+                    f"{pe_pos.min():,.1f}" if len(pe_pos) else "—")
 
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
@@ -447,8 +477,7 @@ if MODE.startswith("คัดกรอง"):
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
             # link_cols = ทำชื่อหุ้นให้กดได้ → เด้งไปวิเคราะห์รายตัวทันที
             html_table(show, first_col="อันดับ", trim_year=False,
-                       max_height=560, link_cols=("ticker",),
-                       sort_cols=SORTABLE, cur_sort=sort_col, cur_asc=asc)
+                       max_height=560, link_cols=("ticker",))
             st.caption(f"เรียงตาม **{sort_col}** ({order}) · "
                        f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
                        "· **กดที่ชื่อหุ้น** เพื่อดูการวิเคราะห์รายตัวทันที "
@@ -484,8 +513,8 @@ if MODE.startswith("คัดกรอง"):
                 on = cc[0].checkbox(" ", value=t in picked, key=f"cb_{t}",
                                     label_visibility="collapsed")
                 picked.add(t) if on else picked.discard(t)
-                cc[1].markdown(f"<a class='tk' target='_self' href='?t={t}'>{t}</a>",
-                               unsafe_allow_html=True)
+                cc[1].markdown(f"<a class='tk' target='_blank' rel='noopener' "
+                               f"href='?t={t}'>{t}</a>", unsafe_allow_html=True)
                 cc[2].caption(str(r["ชื่อบริษัท"])[:34])
                 cc[3].caption(_cell(r.get("P/E"), 1))
                 cc[4].caption(_cell(r.get("P/BV"), 2))

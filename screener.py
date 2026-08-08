@@ -106,26 +106,61 @@ def quick_one(ticker: str) -> dict:
     return row
 
 
-def quick_screen(tickers, workers=8, progress=None) -> pd.DataFrame:
+def quick_screen(tickers, workers=8, progress=None, retries=2) -> pd.DataFrame:
     """
     คัดกรองเร็วหลายตัวพร้อมกัน
 
     workers : จำนวนเส้นที่ดึงพร้อมกัน — อย่าตั้งเกิน 12
               เพราะ yfinance จะมองว่ายิงถี่เกินไปแล้วบล็อก
+
+    retries : จำนวนรอบที่จะลองซ้ำเฉพาะตัวที่ดึงไม่สำเร็จ
+
+    ทำไมต้องลองซ้ำ — เรื่องนี้สำคัญมาก
+    -----------------------------------
+    yfinance จะปฏิเสธคำขอเป็นครั้งคราวเมื่อยิงถี่ ตัวที่พลาดจึงไม่ซ้ำกันในแต่ละรอบ
+    ผลคือ **คัดกรองด้วยเกณฑ์เดิมสองครั้งอาจได้จำนวนหุ้นไม่เท่ากัน**
+    ซึ่งทำให้ผู้ใช้สับสนและไม่รู้ว่าควรเชื่อผลไหน
+
+    การลองซ้ำเฉพาะตัวที่พลาด (พร้อมลดจำนวนเส้นลงและเว้นจังหวะ)
+    ช่วยให้ได้ข้อมูลครบขึ้นมาก และผลใกล้เคียงกันทุกครั้ง
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    rows, total = [], len(tickers)
-    with ThreadPoolExecutor(max_workers=min(workers, 12)) as ex:
-        futs = {ex.submit(quick_one, t): t for t in tickers}
-        for i, f in enumerate(as_completed(futs), 1):
-            rows.append(f.result())
-            if progress:
-                progress(i, total, futs[f])
+
+    def _pass(items, n_workers, done_before=0, total=None):
+        out = []
+        total = total or len(items)
+        with ThreadPoolExecutor(max_workers=min(n_workers, 12)) as ex:
+            futs = {ex.submit(quick_one, t): t for t in items}
+            for i, f in enumerate(as_completed(futs), 1):
+                out.append(f.result())
+                if progress:
+                    progress(min(done_before + i, total), total, futs[f])
+        return out
+
+    total = len(tickers)
+    rows = _pass(list(tickers), workers, 0, total)
+
+    # รอบซ้ำ : เอาเฉพาะตัวที่ยังไม่สำเร็จ ลดจำนวนเส้นลงครึ่งหนึ่งเพื่อไม่ให้โดนบล็อกอีก
+    for r in range(retries):
+        failed = [x["ticker"] for x in rows if x.get("ปัญหา")]
+        if not failed:
+            break
+        if progress:
+            progress(total, total, f"ลองซ้ำรอบ {r+1} ({len(failed):,} ตัวที่ยังไม่สำเร็จ)")
+        time.sleep(1.5)
+        fixed = {x["ticker"]: x for x in _pass(failed, max(2, workers // 2), total, total)}
+        rows = [fixed.get(x["ticker"], x) if x.get("ปัญหา") else x for x in rows]
+
     df = pd.DataFrame(rows)
     for c in QUICK_COLS:
         if c not in df.columns:
             df[c] = np.nan
-    return df[QUICK_COLS + ["ปัญหา"]]
+    df = df[QUICK_COLS + ["ปัญหา"]]
+    ok = int(df["ปัญหา"].eq("").sum())
+    df.attrs["ดึงสำเร็จ"] = ok
+    df.attrs["ทั้งหมด"] = len(df)
+    df.attrs["อัตราสำเร็จ (%)"] = round(ok / len(df) * 100, 1) if len(df) else 0.0
+    return df
 
 
 def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,
