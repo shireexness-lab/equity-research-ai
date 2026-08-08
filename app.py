@@ -177,9 +177,14 @@ def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียง�
 st.markdown("""
 <style>
  .t { width:100%; border-collapse:collapse; font-size:.82rem; margin:.3rem 0 .9rem 0; }
- .t th { padding:.35rem .5rem; text-align:right; font-weight:600; white-space:nowrap; }
+ .t th { padding:.35rem .75rem; text-align:right; font-weight:600; white-space:nowrap; }
  .t th.l, .t td.l { text-align:left; }
- .t td { padding:.3rem .5rem; text-align:right; white-space:nowrap; }
+ .t td { padding:.3rem .75rem; text-align:right; white-space:nowrap; }
+ /* ตารางแคบ — กว้างเท่าเนื้อหาจริง ไม่ยืดเต็มจอ
+    ใช้กับตารางไม่กี่คอลัมน์ เช่น ประวัติปันผล ถ้ายืดเต็มจอตัวเลขจะห่างกันจน
+    สายตาลากจากคอลัมน์ซ้ายไปขวาไม่ติด อ่านผิดบรรทัดได้ง่าย */
+ .fit .t { width:auto; min-width:min(420px, 100%); }
+ .fit { display:block; overflow-x:auto; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,10 +205,15 @@ def _cell(x, dec=2):
 
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
                max_height=None, link_cols=(), sort_cols=(),
-               cur_sort=None, cur_asc=True):
+               cur_sort=None, cur_asc=True, fit=False, left_cols=()):
     """
     แสดง DataFrame เป็นตาราง HTML
 
+    fit        : True = ตารางกว้างเท่าเนื้อหา ไม่ยืดเต็มจอ
+                 ใช้กับตารางไม่กี่คอลัมน์ (ปันผล แตกพาร์ ช่วงราคา)
+    left_cols  : คอลัมน์ที่ให้ชิดซ้าย — ใช้กับวันที่และข้อความ
+                 ตัวเลขชิดขวาเพื่อให้หลักตรงกันอ่านง่าย
+                 แต่วันที่ชิดขวาจะดูเหมือนตัวเลขจนสับสน
     max_height : ถ้าใส่ (เช่น 520) ตารางจะสูงไม่เกินนั้นแล้ว **เลื่อนลงดูได้**
                  พร้อมตรึงหัวตารางไว้ด้านบน — ใช้กับรายการหุ้นยาว ๆ
     sort_cols  : ชื่อคอลัมน์ที่ "กดหัวตารางแล้วเรียงได้"
@@ -216,7 +226,8 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
     from urllib.parse import quote
     cols = [str(c)[:4] if trim_year else str(c) for c in df.columns]
     style = f" style='max-height:{max_height}px;overflow-y:auto'" if max_height else ""
-    h = [f"<div class='tw'{style}><table class='t'><thead><tr>"
+    klass = "tw fit" if fit else "tw"
+    h = [f"<div class='{klass}'{style}><table class='t'><thead><tr>"
          f"<th class='l'>{first_col}</th>"]
     for c in cols:
         if c in sort_cols:
@@ -229,12 +240,15 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
             h.append(f"<th><a class='{cls}' target='_self' "
                      f"href='?sort={quote(str(c))}&order={nxt}'>{c}{arrow}</a></th>")
         else:
-            h.append(f"<th>{c}</th>")
+            h.append(f"<th{' class=l' if c in left_cols else ''}>{c}</th>")
     h.append("</tr></thead><tbody>")
     for name in df.index:
         h.append(f"<tr><td class='l'>{name}</td>")
         for c in df.columns:
             val = _cell(df.loc[name, c], dec)
+            if c in left_cols:
+                h.append(f"<td class='l'>{val}</td>")
+                continue
             if c in link_cols and val != "—":
                 # target="_self" = เปิดในแท็บเดิม ไม่เด้งแท็บใหม่
                 # เปิดแท็บใหม่ เพื่อไม่ให้ผลคัดกรองในแท็บเดิมหายไป
@@ -246,13 +260,13 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
     st.markdown("".join(h), unsafe_allow_html=True)
 
 
-def kv_table(pairs, dec=2):
+def kv_table(pairs, dec=2, fit=False):
     """ตารางสองคอลัมน์ : ชื่อรายการ / ค่า"""
     rows = "".join(
         f"<tr><td class='l'>{k}</td><td><b>{_cell(v, dec)}</b></td></tr>"
         for k, v in pairs)
-    st.markdown(f"<div class='tw'><table class='t'>{rows}</table></div>",
-                unsafe_allow_html=True)
+    st.markdown(f"<div class='{'tw fit' if fit else 'tw'}'><table class='t'>{rows}"
+                "</table></div>", unsafe_allow_html=True)
 
 
 def metric_card(col, label, value, delta=None, color=None):
@@ -1235,34 +1249,59 @@ with t6:
                    "· ในวัน XD ราคามักลดลงราวเงินปันผล ซึ่งไม่ใช่หุ้นตก "
                    "แต่เป็นมูลค่าปันผลออกจากราคาไป")
 
+        # ตารางแคบทั้งคู่ วางคู่กันจะได้ไม่มีพื้นที่ว่างข้างขวาเป็นแถบยาว
         h = DV.get("ปันผลย้อนหลัง")
-        if h is not None and len(h):
-            hh = h.copy()
-            hh.index = [str(i) for i in range(1, len(hh) + 1)]
-            st.markdown("**ประวัติปันผล 5 ปีล่าสุด**")
-            html_table(hh, first_col="ครั้งที่", dec=4, trim_year=False,
-                       max_height=280)
         sp = DV.get("แตกพาร์/รวมพาร์")
-        if sp is not None and len(sp):
-            spp = sp.copy()
-            spp.index = [str(i) for i in range(1, len(spp) + 1)]
-            st.markdown("**แตกพาร์ / รวมพาร์**")
-            html_table(spp, first_col="ครั้งที่", dec=2, trim_year=False)
-            st.caption("การแตกพาร์ทำให้ราคาต่อหุ้นลดลงตามสัดส่วน "
-                       "แต่มูลค่ารวมที่ถืออยู่เท่าเดิม — ไม่ใช่การขาดทุน")
+        g1, g2 = st.columns(2)
+
+        with g1:
+            if h is not None and len(h):
+                hh = h.copy()
+                hh.index = [str(i) for i in range(1, len(hh) + 1)]
+                st.markdown("**ประวัติปันผล 5 ปีล่าสุด**")
+                html_table(hh, first_col="#", dec=4, trim_year=False,
+                           max_height=300, fit=True, left_cols=("วัน XD",))
+                if len(hh) >= 2:
+                    first = float(hh["เงินปันผล (ต่อหุ้น)"].iloc[-1])
+                    last = float(hh["เงินปันผล (ต่อหุ้น)"].iloc[0])
+                    if first > 0:
+                        n = len(hh) - 1
+                        g = (last / first) ** (1 / n) - 1 if n else 0
+                        st.caption(f"ปันผลโตเฉลี่ย **{g*100:.1f}% ต่อครั้ง** "
+                                   f"({first:.4f} → {last:.4f})")
+            else:
+                st.markdown("**ประวัติปันผล**")
+                st.caption("ไม่พบประวัติการจ่ายปันผลใน 5 ปีล่าสุด")
+
+        with g2:
+            if sp is not None and len(sp):
+                spp = sp.copy()
+                spp.index = [str(i) for i in range(1, len(spp) + 1)]
+                st.markdown("**แตกพาร์ / รวมพาร์**")
+                html_table(spp, first_col="#", dec=2, trim_year=False,
+                           fit=True, left_cols=("วันที่",))
+                st.caption("แตกพาร์ทำให้ราคาต่อหุ้นลดลงตามสัดส่วน "
+                           "แต่มูลค่ารวมที่ถืออยู่เท่าเดิม — ไม่ใช่การขาดทุน")
+            else:
+                st.markdown("**แตกพาร์ / รวมพาร์**")
+                st.caption("ไม่เคยแตกพาร์หรือรวมพาร์")
 
     # ---------- ข่าว ----------
     st.markdown("---")
     st.markdown("### 📰 หัวข้อข่าว")
     if NH.get("รายการ"):
         st.caption(f"แหล่งข้อมูล: {', '.join(NH['ที่มา'])}")
+        # วันที่เป็นคอลัมน์แคบคงที่ทางซ้าย หัวข้อไหลต่อทางขวา
+        # ทำให้สายตากวาดลงตามแนวตั้งได้ ไม่ต้องหาว่าวันที่อยู่ตรงไหนของแต่ละบรรทัด
         for it in NH["รายการ"]:
+            n1, n2 = st.columns([1, 9])
+            n1.markdown(f"<span class='muted'>{it.get('วันที่') or '—'}</span>",
+                        unsafe_allow_html=True)
             title = it["หัวข้อ"]
-            line = f"**{title}**" if not it.get("ลิงก์") else \
-                f"**[{title}]({it['ลิงก์']})**"
-            st.markdown(f"{line}  \n"
-                        f"<span class='muted'>{it.get('วันที่') or '—'} · "
-                        f"{it.get('ที่มา','')}</span>", unsafe_allow_html=True)
+            link = it.get("ลิงก์")
+            n2.markdown((f"[{title}]({link})" if link else f"{title}")
+                        + f"  \n<span class='muted' style='font-size:.78rem'>"
+                          f"{it.get('ที่มา','')}</span>", unsafe_allow_html=True)
     else:
         st.info("ดึงหัวข้อข่าวอัตโนมัติไม่ได้สำหรับหุ้นตัวนี้\n\n"
                 "ข่าวหุ้นไทยส่วนใหญ่อยู่บนเว็บตลาดหลักทรัพย์ซึ่งไม่ได้เปิด API "
