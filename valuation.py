@@ -582,11 +582,33 @@ def value_stock(data, R=None, wacc=None, g1=None, g2=DEFAULT_TERMINAL_G,
     sens = (sensitivity(fcf0, years1, g2, shares, net_debt, wacc, g1)
             if use_dcf else None)
 
+    # ---- วิธีเฉพาะกลุ่มธุรกิจ (Residual Income / กำไรกลางวัฏจักร / P-FFO / MC) ----
+    # เพิ่มเข้า methods ก่อนคำนวณค่ากลาง เพื่อให้มีผลต่อมูลค่าสรุปด้วย
+    # ถ้าโมดูลเสริมมีปัญหา ต้องไม่ทำให้การประเมินหลักพังไปด้วย
+    ext = {}
+    try:
+        import valuation_ext as VE
+        mc_in = None
+        if use_dcf and fcf0 and fcf0 > 0:
+            mc_in = {"fcf0": fcf0, "net_debt": net_debt or 0.0, "wacc": wacc,
+                     "g1": g1, "g2": g2, "years1": years1}
+        ext = VE.extra_methods(data, R, w, shares, price=price, inputs=mc_in)
+        for k, v in (ext.get("methods") or {}).items():
+            if v is not None and np.isfinite(v) and v > 0:
+                methods[k] = v
+        notes += ext.get("หมายเหตุ", [])
+    except Exception as e:
+        notes.append(f"โมดูลวิธีเฉพาะกลุ่มทำงานไม่สำเร็จ : {type(e).__name__}: {e}")
+
     valid = [v for k, v in methods.items()
              if v is not None and np.isfinite(v) and v > 0 and "ไม่นับ" not in k]
     fair = float(np.median(valid)) if valid else None
 
     return {
+        "กลุ่มธุรกิจ": ext.get("กลุ่ม", "ทั่วไป"),
+        "แนวทางตามกลุ่ม": ext.get("แนวทาง"),
+        "วิธีเฉพาะกลุ่ม": ext.get("รายละเอียด", {}),
+        "ต้องกรอกเอง": ext.get("ต้องกรอกเอง", []),
         "ticker": data.get("ticker"),
         "ราคาปัจจุบัน": price,
         "สกุลเงิน": data.get("info", {}).get("currency", ""),
