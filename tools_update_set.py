@@ -26,9 +26,8 @@ import json
 import re
 import sys
 from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
-
-import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
 OUT = BASE_DIR / "data" / "set_listed.json"
@@ -62,6 +61,39 @@ def _kind(name: str) -> str:
     return "หุ้นสามัญ"
 
 
+class _TableParser(HTMLParser):
+    """
+    ตัวแกะตาราง HTML แบบง่าย ๆ ใช้เครื่องมือที่ Python มีมาให้อยู่แล้ว
+
+    ทำไมไม่ใช้ pandas.read_html : ฟังก์ชันนั้นต้องติดตั้ง lxml เพิ่ม
+    ซึ่งเป็นภาระเกินจำเป็นสำหรับเครื่องมือที่ใช้ปีละ 2 ครั้ง
+    ไฟล์ของ SET เป็นตาราง HTML ธรรมดามาก แกะเองได้ในไม่กี่บรรทัด
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows, self._row, self._cell, self._in = [], None, [], False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._in, self._cell = True, []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._in:
+            self._row.append(re.sub(r"\s+", " ", "".join(self._cell)).strip())
+            self._in = False
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._in:
+            self._cell.append(data)
+
+
 def convert(path: Path) -> dict:
     raw = Path(path).read_bytes()
 
@@ -76,28 +108,30 @@ def convert(path: Path) -> dict:
     if txt is None:
         raise ValueError("ถอดรหัสไฟล์ไม่สำเร็จ — ไม่ใช่ไฟล์จาก SET หรือรูปแบบเปลี่ยนไป")
 
-    import io
-    tables = pd.read_html(io.StringIO(txt))
-    if not tables:
-        raise ValueError("ไม่พบตารางในไฟล์")
-    t = max(tables, key=lambda x: x.shape[0])
-    if t.shape[1] < len(COLS):
-        raise ValueError(f"ตารางมี {t.shape[1]} คอลัมน์ แต่คาดว่าจะมี {len(COLS)} "
+    p = _TableParser()
+    p.feed(txt)
+    if not p.rows:
+        raise ValueError("ไม่พบตารางในไฟล์ — รูปแบบไฟล์ของ SET อาจเปลี่ยนไป")
+
+    widest = max(len(r) for r in p.rows)
+    if widest < len(COLS):
+        raise ValueError(f"ตารางมีอย่างมาก {widest} คอลัมน์ แต่คาดว่าจะมี {len(COLS)} "
                          "— รูปแบบไฟล์ของ SET อาจเปลี่ยนไป")
-    t = t.iloc[:, :len(COLS)]
-    t.columns = COLS
-    t = t.iloc[2:].reset_index(drop=True)          # ข้ามหัวเรื่องกับหัวตาราง
 
     rows, meta_date = [], ""
-    for _, r in t.iterrows():
-        sym = str(r["sym"]).strip().upper()
-        if not sym or sym in ("NAN", "หลักทรัพย์"):
+    for r in p.rows:
+        if len(r) < len(COLS):
+            continue                                # แถวหัวเรื่องที่รวมช่อง
+        sym = r[0].strip().upper()
+        if not sym or sym in ("หลักทรัพย์", "SYMBOL"):
             continue
-        rows.append({"sym": sym, "name": _clean(r["name"]),
-                     "market": str(r["market"]).strip(),
-                     "industry": str(r["industry"]).strip(),
-                     "sector": str(r["sector"]).strip(),
-                     "kind": _kind(r["name"])})
+        if not re.fullmatch(r"[A-Z0-9&.\-]{1,15}", sym):
+            continue                                # ไม่ใช่ชื่อย่อหลักทรัพย์
+        rows.append({"sym": sym, "name": _clean(r[1]),
+                     "market": r[2].strip(),
+                     "industry": r[3].strip(),
+                     "sector": r[4].strip(),
+                     "kind": _kind(r[1])})
 
     m = re.search(r"ข้อมูล ณ วันที่\s*([^<]+)", txt)
     if m:
