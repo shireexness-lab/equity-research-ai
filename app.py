@@ -1369,9 +1369,9 @@ RP.setup_matplotlib_font()
 # กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
 RP.set_chart_theme(dark=DARK)
 
-t1, t2, t3, t4, t5, t6 = st.tabs(
+t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
     ["ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า", "ช่วงราคา",
-     "ข่าว & XD"])
+     "พยากรณ์ 10 ปี", "ความเสี่ยง", "ข่าว & XD"])
 
 with t1:
     a, bb = st.columns(2)
@@ -1668,6 +1668,176 @@ with t5:
         st.markdown(f"- {r}")
 
 with t6:
+    import forecast as FC
+
+    st.markdown("### 📈 พยากรณ์ 10 ปี × 3 ฉาก")
+    st.caption(
+        "ทุกสมมติฐานสกัดจาก**งบย้อนหลังของหุ้นตัวนี้เอง** ไม่ได้ตั้งขึ้นมาลอย ๆ "
+        "แล้วปรับด้วยหลัก 2 ข้อ : การเติบโตจางลงเสมอ และอัตรากำไรกลับสู่ค่าเฉลี่ย")
+
+    fy1, fy2 = st.columns([1, 3])
+    n_years = fy1.slider("จำนวนปี", 3, 10, 10, key="fc_years")
+
+    @st.cache_data(show_spinner=False, ttl=1800)
+    def _fc(tk, yrs, _rid):
+        return FC.forecast_all(R, years=yrs)
+
+    FCR = _fc(ticker, n_years, id(R))
+
+    if not FCR.get("ใช้ได้"):
+        st.error(f"พยากรณ์ไม่ได้ — {FCR.get('เหตุผล')}")
+    else:
+        asm = FCR["ฉาก"]["Base"]["สมมติฐาน"]
+        for wmsg in FCR.get("คำเตือน", []):
+            st.warning(wmsg)
+
+        with st.expander("🔍 สมมติฐานที่สกัดจากงบย้อนหลัง (กดดูที่มาของทุกตัวเลข)"):
+            kv_table([(k, asm[k]) for k in (
+                "จำนวนปีข้อมูล", "อัตราโตรายได้ย้อนหลัง (%)",
+                "อัตรากำไรขั้นต้น ค่ากลาง (%)", "อัตรากำไรขั้นต้น ปีล่าสุด (%)",
+                "อัตรากำไรสุทธิ ค่ากลาง (%)", "อัตรากำไรสุทธิ ปีล่าสุด (%)",
+                "CapEx / รายได้ (%)", "OCF / รายได้ (%)",
+                "อัตราจ่ายปันผล (%)", "อัตราเปลี่ยนจำนวนหุ้น (%)")
+                if asm.get(k) is not None], fit=True)
+            st.caption(
+                "**ค่ากลาง vs ปีล่าสุด** — ถ้าอัตรากำไรปีล่าสุดสูงกว่าค่ากลางมาก "
+                "โมเดลจะค่อย ๆ ดึงกลับหาค่ากลางภายใน 5 ปี เพราะกำไรที่ดีผิดปกติ"
+                "จะดึงคู่แข่งเข้ามา  \n"
+                "นี่คือกลไกที่ป้องกันไม่ให้เกิดกรณีแบบ BCP ที่เอาปีพีคไปคาดว่า"
+                "จะดีตลอดไป")
+
+        # ---- เทียบ 3 ฉาก ----
+        st.markdown("#### เทียบ 3 ฉาก ณ ปีสุดท้าย")
+        cmp3 = FCR["เทียบ 3 ฉาก (ปีสุดท้าย)"].copy()
+        for c in cmp3.columns:
+            cmp3[c] = pd.to_numeric(cmp3[c], errors="coerce")
+        big = cmp3.loc[[i for i in cmp3.index
+                        if i not in ("EPS", "เงินปันผลต่อหุ้น")]] / 1e6
+        small = cmp3.loc[[i for i in cmp3.index
+                          if i in ("EPS", "เงินปันผลต่อหุ้น")]]
+        st.markdown(f"**หน่วยล้าน {cur}**")
+        html_table(big, first_col="รายการ", trim_year=False, fit=True, dec=0)
+        st.markdown(f"**ต่อหุ้น ({cur})**")
+        html_table(small, first_col="รายการ", trim_year=False, fit=True, dec=2)
+
+        # ---- ตารางรายฉาก ----
+        pick = st.radio("ดูตารางเต็มของฉาก", ["Base", "Bear", "Bull"],
+                        horizontal=True, key="fc_pick")
+        f = FCR["ฉาก"][pick]
+        st.info(f"**{pick}** — {f['คำอธิบายฉาก']}  \n"
+                f"อัตราโตปีแรก **{f['อัตราโตปีแรก (%)']:.1f}%** → "
+                f"ปีสุดท้าย **{f['อัตราโตปีสุดท้าย (%)']:.1f}%**")
+
+        d = f["ตาราง"].copy()
+        for c in ("รายได้", "ต้นทุนขาย", "กำไรขั้นต้น", "กำไรดำเนินงาน",
+                  "กำไรสุทธิ", "FCF"):
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors="coerce") / 1e6
+        d = d.drop(columns=["จำนวนหุ้น"], errors="ignore")
+        d.index = [f"ปีที่ {int(x)}" for x in d["ปีที่"]]
+        d = d.drop(columns=["ปีที่"])
+        st.caption(f"หน่วยล้าน {cur} ยกเว้น EPS · เงินปันผลต่อหุ้น · และคอลัมน์ %")
+        html_table(d, first_col="ปี", trim_year=False, fit=True, max_height=480,
+                   dec_cols={"EPS": 2, "เงินปันผลต่อหุ้น": 3})
+
+        st.download_button(
+            f"ดาวน์โหลดพยากรณ์ {pick} (CSV)",
+            f["ตาราง"].to_csv(index=False).encode("utf-8-sig"),
+            f"พยากรณ์_{ticker}_{pick}.csv", "text/csv")
+
+        st.error(
+            "⚠️ **นี่คือการต่อเส้นแนวโน้มจากอดีต ไม่ใช่การทำนายอนาคต**  \n"
+            "โมเดลไม่รู้ว่าบริษัทกำลังจะออกสินค้าใหม่ เสียลูกค้ารายใหญ่ "
+            "หรือโดนกฎหมายใหม่  \n"
+            "**ปีที่ 1–3 พอใช้อ้างอิงได้ · ปีที่ 8–10 เป็นเพียงกรอบความเป็นไปได้**")
+
+
+with t7:
+    import risk as RK
+
+    st.markdown("### ⚠️ ประเมินความเสี่ยง 12 ด้าน")
+
+    @st.cache_data(show_spinner=False, ttl=1800)
+    def _risk(tk, _rid):
+        return RK.assess(data, R)
+
+    RS = _risk(ticker, id(R))
+    tot = RS.get("คะแนนรวม")
+
+    rk = st.columns(3)
+    metric_card(rk[0], "คะแนนความเสี่ยงรวม",
+                f"{tot:.0f} / 100" if tot is not None else "—",
+                RS.get("ระดับ"),
+                "#2e7d32" if (tot or 0) < 40 else
+                "#ef6c00" if (tot or 0) < 60 else "#c62828")
+    metric_card(rk[1], "มาจากตัวเลขจริง",
+                f"{RS['สัดส่วนจากตัวเลขจริง (%)']:.0f}%",
+                "ของน้ำหนักทั้งหมด")
+    top = RS.get("เสี่ยงสูงสุด") or []
+    metric_card(rk[2], "ด้านที่เสี่ยงที่สุด",
+                top[0][0] if top else "—",
+                f"{top[0][1]:.0f} คะแนน" if top else None)
+
+    st.caption(
+        "**0 = ไม่มีความเสี่ยง · 100 = เสี่ยงสูงสุด** — คะแนนรวมถ่วงน้ำหนัก "
+        "โดยด้านที่คำนวณจากงบได้น้ำหนักมากกว่า เพราะมีหลักฐานรองรับ")
+
+    tsum = RS["ตารางสรุป"].copy()
+    html_table(tsum, first_col="ด้าน", trim_year=False, fit=True, dec=0,
+               left_cols=("ระดับ", "ที่มา"),
+               dec_cols={"คะแนน": 0, "น้ำหนัก": 1})
+
+    st.caption(
+        "**ความหมายของ *ที่มา*** — นี่คือส่วนที่สำคัญที่สุดของหน้านี้  \n"
+        "`คำนวณ` วัดจากงบการเงินโดยตรง ตรวจสอบย้อนได้ทุกตัว · "
+        "`กลุ่ม` ประเมินจากลักษณะอุตสาหกรรม **ไม่ได้มาจากงบของบริษัทนี้** "
+        "เป็นจุดตั้งต้นให้ปรับตามความรู้ที่อาจารย์มี · "
+        "`ต้องดูเอง` ไม่มีข้อมูลให้ประเมินอัตโนมัติ")
+
+    st.markdown("#### รายละเอียดด้านที่คำนวณจากงบ")
+    for name in ("Financial Risk", "Business Risk", "Competition"):
+        dd = RS["ด้าน"].get(name) or {}
+        if not dd.get("รายละเอียด"):
+            continue
+        sc = dd.get("คะแนน")
+        with st.expander(f"{name} — {sc:.0f} คะแนน ({RK.level(sc)})"
+                         if sc is not None else name):
+            for it in dd["รายละเอียด"]:
+                c = st.columns([2.2, 1, 1, 4])
+                c[0].markdown(f"**{it['ตัวชี้วัด']}**")
+                v = it["ค่า"]
+                c[1].markdown(f"{v:,.2f}" if isinstance(v, float) else str(v))
+                c[2].markdown(f"เสี่ยง **{it['คะแนนเสี่ยง']:.0f}**")
+                c[3].caption(it["เกณฑ์"])
+
+    st.markdown("#### ด้านที่ประเมินจากลักษณะอุตสาหกรรม")
+    st.caption("ตัวเลขเหล่านี้ **ไม่ได้มาจากงบการเงินของบริษัทนี้** "
+               "— เป็นค่าตั้งต้นตามอุตสาหกรรม ควรปรับตามที่อาจารย์รู้จริง")
+    for name in ("Country Risk", "Currency Risk", "Legal/Regulatory",
+                 "Technology Risk", "Disruption Risk", "AI Risk",
+                 "Cyber Risk", "Climate Risk"):
+        dd = RS["ด้าน"].get(name) or {}
+        sc = dd.get("คะแนน")
+        if sc is None:
+            continue
+        c = st.columns([1.6, 0.8, 1.2, 5])
+        c[0].markdown(f"**{name}**")
+        c[1].markdown(f"**{sc:.0f}**")
+        c[2].markdown(RK.level(sc))
+        c[3].caption(dd.get("คำอธิบาย", ""))
+
+    kp = RS["ด้าน"].get("Key Person Risk") or {}
+    st.markdown("#### Key Person Risk — ต้องประเมินเอง")
+    st.info(kp.get("คำอธิบาย", "") + "\n\n**คำถามที่ควรหาคำตอบ**\n\n"
+            + "\n".join(f"- {q}" for q in kp.get("คำถามที่ควรหาคำตอบ", [])))
+
+    st.download_button(
+        "ดาวน์โหลดผลประเมินความเสี่ยง (CSV)",
+        RS["ตารางสรุป"].to_csv().encode("utf-8-sig"),
+        f"ความเสี่ยง_{ticker}.csv", "text/csv")
+
+
+with t8:
     import news as NW
 
     @st.cache_data(show_spinner=False, ttl=1800)
