@@ -147,12 +147,15 @@ def run_analysis(ticker, wacc, g1, rf, mos, refresh):
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def make_pdf_bytes(ticker, wacc, g1, rf, mos, refresh):
-    from report import analyze_all, render_pdf
+    from report import analyze_all, extras, render_pdf
     import tempfile
     data, S, R, v, b = analyze_all(ticker, wacc=wacc, g1=g1, rf=rf,
                                    mos=mos, refresh=refresh)
+    # ต้องเรียก extras ด้วย ไม่งั้น PDF จะขาดหัวข้อคำแนะนำ พยากรณ์
+    # ความเสี่ยง คุณภาพกิจการ และข่าว — ซึ่งเป็นครึ่งหนึ่งของรายงาน
+    ext = extras(data, R, v, b, rf=rf)
     with tempfile.TemporaryDirectory() as td:
-        p = render_pdf(data, S, R, v, b, out_dir=td)
+        p = render_pdf(data, S, R, v, b, out_dir=td, ext=ext)
         return Path(p).read_bytes(), Path(p).name
 
 
@@ -1378,9 +1381,98 @@ RP.setup_matplotlib_font()
 # กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
 RP.set_chart_theme(dark=DARK)
 
-t1, t2, t3, t4, t5, t6, t7, t9, t8 = st.tabs(
-    ["ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า", "ช่วงราคา",
-     "พยากรณ์ 10 ปี", "ความเสี่ยง", "คุณภาพ & กูรู", "ข่าว & XD"])
+t0, t1, t2, t3, t4, t5, t6, t7, t9, t8 = st.tabs(
+    ["⭐ คำแนะนำ", "ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า",
+     "ช่วงราคา", "พยากรณ์ 10 ปี", "ความเสี่ยง", "คุณภาพ & กูรู", "ข่าว & XD"])
+
+with t0:
+    import recommend as RC
+    import news_ai as NA
+    import risk as _RK
+    import quality as _QL
+    import forecast as _FC
+
+    @st.cache_data(show_spinner=False, ttl=1800)
+    def _reco(tk, _rid):
+        vv = dict(v)
+        vv["ความน่าเชื่อถือ"] = b.get("ความน่าเชื่อถือ")
+        _rf = v.get("wacc_detail", {}).get("พันธบัตร (rf)")
+        nw = NA.analyze(tk, limit=25)
+        return RC.build(data, R, v=vv,
+                        risk=_RK.assess(data, R),
+                        qual=_QL.assess_all(data, R, v=v, rf=_rf),
+                        fc=_FC.forecast_all(R), news=nw), nw
+
+    with st.spinner("กำลังรวมผลจากทุกโมดูล..."):
+        RECO, NEWSAI = _reco(ticker, id(R))
+
+    if not RECO.get("ใช้ได้"):
+        st.error(RECO.get("เหตุผล", "สรุปคำแนะนำไม่ได้"))
+    else:
+        st.markdown(
+            f"<div style='background:{RECO['สี']}18;border-left:8px solid "
+            f"{RECO['สี']};padding:18px 22px;border-radius:8px;margin:6px 0 14px 0'>"
+            f"<div style='font-size:2.1rem;font-weight:800;color:{RECO['สี']};"
+            f"line-height:1.15'>{RECO['คำแนะนำ']}</div>"
+            f"<div style='font-size:1rem;opacity:.85;margin-top:4px'>"
+            f"คะแนนรวม <b>{RECO['คะแนนรวม']:.1f} / 100</b> · "
+            f"ความมั่นใจ <b>{RECO['ความมั่นใจ (%)']:.0f}%</b></div>"
+            f"<div style='margin-top:6px'>{RECO['คำอธิบายระดับ']}</div></div>",
+            unsafe_allow_html=True)
+
+        rr = st.columns(3)
+        metric_card(rr[0], "ราคาปัจจุบัน",
+                    f"{RECO['ราคาปัจจุบัน']:,.2f}" if RECO.get("ราคาปัจจุบัน") else "—",
+                    cur)
+        metric_card(rr[1], "มูลค่าที่ประเมินได้",
+                    f"{RECO['มูลค่าที่ประเมินได้']:,.2f}"
+                    if RECO.get("มูลค่าที่ประเมินได้") else "—",
+                    "ค่ากลางทุกวิธี")
+        d_ = v.get("ส่วนต่างจากราคา (%)")
+        metric_card(rr[2], "ส่วนต่างจากราคา",
+                    f"{d_:+.1f}%" if d_ is not None else "—", None,
+                    "#2e7d32" if (d_ or 0) > 0 else "#c62828")
+
+        st.markdown("#### ปัจจัยที่ใช้ตัดสิน")
+        ft = RECO["ตารางปัจจัย"].copy()
+        ft = ft[["คะแนน", "น้ำหนักจริง (%)", "ดันคะแนน", "หลักฐาน"]]
+        html_table(ft, first_col="ด้าน", trim_year=False, fit=True,
+                   sign_cols=("ดันคะแนน",), left_cols=("หลักฐาน",),
+                   dec_cols={"คะแนน": 1, "น้ำหนักจริง (%)": 0, "ดันคะแนน": 1})
+        st.caption("**ดันคะแนน** = ด้านนั้นดันคะแนนรวมขึ้น/ลงกี่คะแนน "
+                   "เทียบกับถ้าได้คะแนนกลาง ๆ (50)")
+
+        e1, e2 = st.columns(2)
+        with e1:
+            st.markdown("**🟢 หนุนมากที่สุด**")
+            for f in RECO["หนุนมากที่สุด"]:
+                st.markdown(f"- **{f['ด้าน']}** ({f['ดันคะแนน']:+.1f})  \n"
+                            f"<span class='muted'>{f['หลักฐาน']}</span>",
+                            unsafe_allow_html=True)
+        with e2:
+            st.markdown("**🔴 ฉุดมากที่สุด**")
+            if RECO["ฉุดมากที่สุด"]:
+                for f in RECO["ฉุดมากที่สุด"]:
+                    st.markdown(f"- **{f['ด้าน']}** ({f['ดันคะแนน']:+.1f})  \n"
+                                f"<span class='muted'>{f['หลักฐาน']}</span>",
+                                unsafe_allow_html=True)
+            else:
+                st.caption("ไม่มีด้านใดฉุดคะแนนลง")
+
+        if RECO["อะไรจะเปลี่ยนข้อสรุป"]:
+            st.markdown("#### 🔀 อะไรจะทำให้ข้อสรุปเปลี่ยน")
+            for t_ in RECO["อะไรจะเปลี่ยนข้อสรุป"]:
+                st.markdown(f"- {t_['ถ้า']} "
+                            f"({t_['ห่างจากราคาปัจจุบัน']}) → "
+                            f"**{t_['จะกลายเป็น']}**")
+
+        st.info(
+            "**ข้อสรุปนี้มาจากกฎถ่วงน้ำหนักที่เขียนไว้ชัดเจน ไม่ใช่โมเดลภาษา**  \n"
+            "ข้อมูลชุดเดิมจะให้คำตอบเดิมเสมอ และตรวจย้อนได้ว่าคะแนนแต่ละด้าน"
+            "มาจากตัวเลขไหน — ต่างจากการให้ AI ตอบเป็นภาษา ซึ่งตอบไม่เหมือนกัน"
+            "สองครั้งติดและตรวจสอบไม่ได้")
+        st.error("⚠️ **ไม่ใช่คำแนะนำการลงทุน** — เป็นการสรุปตัวเลขเพื่อการศึกษา "
+                 "โปรดตรวจสอบด้วยตนเองก่อนตัดสินใจ")
 
 with t1:
     a, bb = st.columns(2)

@@ -454,6 +454,17 @@ img { width:100%; }
         padding:2mm 3mm; margin:2mm 0; font-size:8.5pt; }
 .ok { background:#edf7ed; border-left:2.5pt solid #2e7d32;
       padding:2mm 3mm; margin:2mm 0; font-size:8.5pt; }
+/* กล่องเน้นคำแนะนำสรุป */
+.box { background:#f7f9fc; padding:3mm 4mm; margin:2mm 0 3mm 0;
+       border-radius:1mm; }
+/* ตารางข้อมูลหลายคอลัมน์ (พยากรณ์ · ข่าว) */
+table.data { width:100%; border-collapse:collapse; font-size:8pt;
+             margin:2mm 0 3mm 0; }
+table.data th { background:#eef2f7; color:#1f4e79; font-weight:700;
+                padding:1.2mm 2mm; text-align:left;
+                border-bottom:0.6pt solid #ccd5e0; }
+table.data td { padding:1mm 2mm; border-bottom:0.4pt solid #e7ecf2; }
+table.data td.num { text-align:right; }
 .pagebreak { page-break-after:always; }
 .two { display:flex; gap:6mm; }
 .two > div { flex:1; }
@@ -469,7 +480,7 @@ ZONE_COLOR = {"Strong Buy": "#1b5e20", "Buy": "#2e7d32", "Hold": "#757575",
 # ประกอบรายงาน
 # ---------------------------------------------------------------------------
 
-def build_html(data, S, R, v, b) -> str:
+def build_html(data, S, R, v, b, ext=None) -> str:
     info = data.get("info", {})
     cur = v["สกุลเงิน"]
     price = v["ราคาปัจจุบัน"]
@@ -665,8 +676,212 @@ def build_html(data, S, R, v, b) -> str:
       แนวคิด : เราไม่มีวันประเมินมูลค่าได้แม่นยำ จึงต้องซื้อต่ำกว่าที่ประเมินไว้พอสมควร
       เพื่อให้ยังไม่ขาดทุนแม้ประเมินผิด</div>""")
 
+    # =======================================================================
+    # หัวข้อเพิ่มเติมจากโมดูล 2-5, 7-9, 13
+    # =======================================================================
+    ext = ext or {}
+    n = 8
+
+    # ---------- คำแนะนำสรุป (Module 9) ----------
+    rc = ext.get("reco")
+    if rc and rc.get("ใช้ได้"):
+        parts.append(f"<h2>{n}. คำแนะนำสรุปพร้อมเหตุผล</h2>")
+        n += 1
+        parts.append(
+            f"<div class='box' style='border-left:6px solid {rc['สี']}'>"
+            f"<div style='font-size:20pt;font-weight:700;color:{rc['สี']}'>"
+            f"{esc(rc['คำแนะนำ'])}</div>"
+            f"<div>คะแนนรวม {rc['คะแนนรวม']:.1f} / 100 · "
+            f"ความมั่นใจ {rc['ความมั่นใจ (%)']:.0f}%</div>"
+            f"<div>{esc(rc['คำอธิบายระดับ'])}</div></div>")
+        rows = [(f["ด้าน"],
+                 f"{f['คะแนน']:.0f} คะแนน · น้ำหนัก {f['น้ำหนักจริง (%)']:.0f}% "
+                 f"· ดันคะแนน {f['ดันคะแนน']:+.1f}")
+                for f in rc["ปัจจัย"]]
+        parts.append(kv_html(rows))
+        ev = "".join(f"<li><b>{esc(f['ด้าน'])}</b> — {esc(f['หลักฐาน'])}</li>"
+                     for f in rc["ปัจจัย"])
+        parts.append(f"<div class='note'><b>หลักฐานของแต่ละด้าน</b>"
+                     f"<ul>{ev}</ul></div>")
+        if rc.get("อะไรจะเปลี่ยนข้อสรุป"):
+            tg = "".join(f"<li>{esc(t['ถ้า'])} ({esc(t['ห่างจากราคาปัจจุบัน'])}) "
+                         f"→ <b>{esc(t['จะกลายเป็น'])}</b></li>"
+                         for t in rc["อะไรจะเปลี่ยนข้อสรุป"])
+            parts.append(f"<div class='note'><b>อะไรจะทำให้ข้อสรุปเปลี่ยน</b>"
+                         f"<ul>{tg}</ul>"
+                         "ข้อสรุปนี้มาจากกฎถ่วงน้ำหนักที่เขียนไว้ชัดเจน "
+                         "ไม่ใช่โมเดลภาษา จึงให้คำตอบเดิมเสมอเมื่อข้อมูลเดิม "
+                         "และตรวจย้อนได้ทุกคะแนน</div>")
+
+    # ---------- คุณภาพกิจการและคะแนนกูรู (Module 2-5) ----------
+    ql = ext.get("quality")
+    if ql:
+        parts.append(f"<h2>{n}. คุณภาพกิจการและคะแนนแบบกูรู</h2>")
+        n += 1
+        sum_rows = []
+        for key, label in (("Module 2", "Quality Business Engine"),
+                           ("Module 3", "Buffett Score"),
+                           ("Module 4", "Peter Lynch Score"),
+                           ("Module 5", "Howard Marks Cycle")):
+            m = ql.get(key) or {}
+            sc = m.get("คะแนนรวม")
+            extra = m.get("ระดับ") or m.get("ประเภทตาม Lynch") or \
+                m.get("สรุปตำแหน่งวัฏจักร") or ""
+            sum_rows.append((label,
+                             (f"{sc:.1f} / 100" if sc is not None else "—")
+                             + (f" · {extra}" if extra else "")))
+        parts.append(kv_html(sum_rows))
+
+        for key in ("Module 2", "Module 3", "Module 4", "Module 5"):
+            m = ql.get(key)
+            if not m:
+                continue
+            parts.append(f"<h3>{esc(m['ชื่อโมดูล'])}</h3>")
+            parts.append(f"<div class='note'>ประเมินได้ "
+                         f"{m['ให้คะแนนได้']}/{m['จำนวนหัวข้อ']} หัวข้อ · "
+                         f"มาจากงบโดยตรง {m['สัดส่วนจากงบ (%)']:.0f}% · "
+                         f"ต้องดูเอง {m['ต้องดูเอง']} หัวข้อ</div>")
+            rr = []
+            for it in m["รายการ"]:
+                sc = it["คะแนน"]
+                val = (f"{sc:.0f}" if sc is not None else "—") + \
+                    f"  [{it['ที่มา']}]"
+                if it["หลักฐาน"] and it["หลักฐาน"] != "—":
+                    val += f" · {it['หลักฐาน']}"
+                rr.append((it["หัวข้อ"], val))
+            parts.append(kv_html(rr))
+
+        parts.append("""<div class='warn'>
+        <b>ความหมายของป้ายที่มา — อ่านก่อนเชื่อคะแนน</b>
+        <ul>
+          <li><b>คำนวณ</b> วัดจากงบการเงินโดยตรง ตรวจสอบย้อนได้ทุกตัว</li>
+          <li><b>ตัวแทน</b> ใช้ตัวเลขอื่นแทนสิ่งที่วัดตรง ๆ ไม่ได้
+              เช่น อัตรากำไรขั้นต้นสูงและนิ่ง อนุมานว่ามีแบรนด์
+              <b>เป็นการอนุมาน ไม่ใช่การวัด และผิดได้</b></li>
+          <li><b>ต้องดูเอง</b> ไม่มีข้อมูลให้ประเมินอัตโนมัติ</li>
+        </ul></div>""")
+
+    # ---------- พยากรณ์ 10 ปี (Module 7) ----------
+    fc = ext.get("forecast")
+    if fc and fc.get("ใช้ได้"):
+        parts.append(f"<h2>{n}. พยากรณ์ 10 ปี × 3 ฉาก</h2>")
+        n += 1
+        asm = fc["ฉาก"]["Base"]["สมมติฐาน"]
+        parts.append("<h3>สมมติฐานที่สกัดจากงบย้อนหลัง</h3>")
+        parts.append(kv_html([
+            (k, fmt(asm[k], 2)) for k in (
+                "จำนวนปีข้อมูล", "อัตราโตรายได้ย้อนหลัง (%)",
+                "อัตรากำไรขั้นต้น ค่ากลาง (%)", "อัตรากำไรสุทธิ ค่ากลาง (%)",
+                "อัตรากำไรสุทธิ ปีล่าสุด (%)", "CapEx / รายได้ (%)",
+                "OCF / รายได้ (%)", "อัตราจ่ายปันผล (%)")
+            if asm.get(k) is not None]))
+        for w in fc.get("คำเตือน", []):
+            parts.append(f"<div class='warn'>{esc(w)}</div>")
+
+        parts.append("<h3>เทียบ 3 ฉาก ณ ปีสุดท้าย</h3>")
+        c3 = fc["เทียบ 3 ฉาก (ปีสุดท้าย)"]
+        rows = []
+        for idx, r in c3.iterrows():
+            unit = 1 if idx in ("EPS", "เงินปันผลต่อหุ้น") else 1e6
+            dec = 2 if unit == 1 else 0
+            suffix = "" if unit == 1 else " ล้าน"
+            rows.append((idx, " · ".join(
+                f"{s} {fmt(r[s] / unit, dec)}{suffix}"
+                for s in ("Bear", "Base", "Bull"))))
+        parts.append(kv_html(rows))
+
+        d = fc["ฉาก"]["Base"]["ตาราง"]
+        parts.append("<h3>ฉาก Base รายปี</h3>")
+        head = ("<tr><th>ปีที่</th><th>รายได้ (ล้าน)</th>"
+                "<th>กำไรสุทธิ (ล้าน)</th><th>NM %</th><th>EPS</th>"
+                "<th>FCF (ล้าน)</th><th>ปันผล/หุ้น</th></tr>")
+        body = "".join(
+            f"<tr><td>{int(r['ปีที่'])}</td>"
+            f"<td class='num'>{fmt(r['รายได้'] / 1e6, 0)}</td>"
+            f"<td class='num'>{fmt(r['กำไรสุทธิ'] / 1e6, 0)}</td>"
+            f"<td class='num'>{fmt(r['อัตรากำไรสุทธิ (%)'], 1)}</td>"
+            f"<td class='num'>{fmt(r['EPS'], 2)}</td>"
+            f"<td class='num'>{fmt(r['FCF'] / 1e6, 0)}</td>"
+            f"<td class='num'>{fmt(r['เงินปันผลต่อหุ้น'], 3)}</td></tr>"
+            for _, r in d.iterrows())
+        parts.append(f"<table class='data'>{head}{body}</table>")
+        parts.append("""<div class='warn'>
+        <b>นี่คือการต่อเส้นแนวโน้มจากอดีต ไม่ใช่การทำนายอนาคต</b>
+        โมเดลไม่รู้ว่าบริษัทกำลังจะออกสินค้าใหม่ เสียลูกค้ารายใหญ่
+        หรือโดนกฎหมายใหม่ — ปีที่ 1-3 พอใช้อ้างอิงได้
+        ปีที่ 8-10 เป็นเพียงกรอบความเป็นไปได้</div>""")
+
+    # ---------- ความเสี่ยง (Module 8) ----------
+    rk = ext.get("risk")
+    if rk and rk.get("คะแนนรวม") is not None:
+        parts.append(f"<h2>{n}. ประเมินความเสี่ยง 12 ด้าน</h2>")
+        n += 1
+        parts.append(kv_html([
+            ("คะแนนความเสี่ยงรวม",
+             f"{rk['คะแนนรวม']:.0f} / 100  ({rk.get('ระดับ','')})"),
+            ("มาจากตัวเลขจริง",
+             f"{rk['สัดส่วนจากตัวเลขจริง (%)']:.0f}% ของน้ำหนักทั้งหมด"),
+        ]))
+        parts.append(kv_html([
+            (name, (f"{d['คะแนน']:.0f}" if d.get("คะแนน") is not None else "—")
+             + f"  [{d.get('ที่มา','')}]"
+             + (f" · {d.get('คำอธิบาย','')}" if d.get("คำอธิบาย") else ""))
+            for name, d in rk["ด้าน"].items()]))
+        for name in ("Financial Risk", "Business Risk", "Competition"):
+            dd = rk["ด้าน"].get(name) or {}
+            if not dd.get("รายละเอียด"):
+                continue
+            parts.append(f"<h3>{name} — รายละเอียดที่คำนวณจากงบ</h3>")
+            parts.append(kv_html([
+                (it["ตัวชี้วัด"],
+                 f"{fmt(it['ค่า'], 2)} · เสี่ยง {it['คะแนนเสี่ยง']:.0f} · "
+                 f"{it['เกณฑ์']}")
+                for it in dd["รายละเอียด"]]))
+        kp = rk["ด้าน"].get("Key Person Risk") or {}
+        if kp.get("คำถามที่ควรหาคำตอบ"):
+            qs = "".join(f"<li>{esc(q)}</li>"
+                         for q in kp["คำถามที่ควรหาคำตอบ"])
+            parts.append(f"<div class='note'><b>Key Person Risk — ต้องประเมินเอง</b>"
+                         f"<br>{esc(kp.get('คำอธิบาย',''))}<ul>{qs}</ul></div>")
+
+    # ---------- ข่าว (Module 13) ----------
+    nw = ext.get("news")
+    if nw:
+        parts.append(f"<h2>{n}. ข่าวและผลกระทบ</h2>")
+        n += 1
+        if nw.get("ใช้ได้"):
+            parts.append(kv_html([
+                ("จำนวนข่าวที่อ่าน", f"{nw['จำนวนข่าว']} ข่าว"),
+                ("ช่วงเวลา", nw.get("ครอบคลุมวันที่", "-")),
+                ("Positive / Negative / Neutral",
+                 f"{nw['บวก']} / {nw['ลบ']} / {nw['กลาง']}"),
+                ("Impact Score",
+                 f"{nw['Impact Score']:+.0f} / 100  ({nw['อารมณ์ข่าว']})"),
+            ]))
+            head = ("<tr><th>วันที่</th><th>ประเภท</th><th>คะแนน</th>"
+                    "<th>หัวข้อ</th></tr>")
+            body = "".join(
+                f"<tr><td>{esc(str(r['วันที่'])[:10])}</td>"
+                f"<td>{esc(r['ประเภท'])}</td>"
+                f"<td class='num'>{r['คะแนน']:+.1f}</td>"
+                f"<td>{esc(str(r['หัวข้อ'])[:90])}</td></tr>"
+                for _, r in nw["ตาราง"].iterrows())
+            parts.append(f"<table class='data'>{head}{body}</table>")
+        else:
+            parts.append(f"<div class='note'>{esc(nw.get('เหตุผล',''))}</div>")
+        parts.append("""<div class='warn'>
+        <b>ข้อจำกัดของการวิเคราะห์ข่าว</b>
+        <ul>
+          <li>ให้คะแนนจากพจนานุกรมคำ <b>ไม่เข้าใจการประชดหรือบริบท</b></li>
+          <li>อ่านได้แค่หัวข้อ ไม่ได้อ่านเนื้อข่าว</li>
+          <li>แหล่งข้อมูลฟรีให้ข่าวได้ราว 10-30 หัวข้อต่อหุ้น
+              การได้ 10,000 ข่าวต้องใช้บริการข่าวเชิงพาณิชย์
+              ซึ่งราคาหลักหมื่นบาทต่อเดือน</li>
+          <li>ข่าวหุ้นไทยส่วนใหญ่อยู่บนเว็บ SET ซึ่งไม่เปิด API สาธารณะ</li>
+        </ul></div>""")
+
     # ---------- ที่มาข้อมูล ----------
-    parts.append("<h2>8. ที่มาของข้อมูลและข้อจำกัด</h2>")
+    parts.append(f"<h2>{n}. ที่มาของข้อมูลและข้อจำกัด</h2>")
     parts.append(kv_html([
         ("งบการเงิน", v["แหล่งงบ"]),
         ("จำนวนปี", f"{v['ปีข้อมูล']} ปี"),
@@ -696,6 +911,46 @@ def build_html(data, S, R, v, b) -> str:
            f"<style>{css}</style></head><body>{body}</body></html>"
 
 
+def extras(data, R, v, b, rf=None) -> dict:
+    """
+    คำนวณโมดูลเสริมทั้งหมดสำหรับใส่ในรายงาน
+
+    ห่อทุกตัวด้วย try/except แยกกัน เพราะโมดูลใดพังไม่ควรทำให้รายงานทั้งฉบับพัง
+    — รายงานที่ขาดหัวข้อหนึ่ง ยังมีประโยชน์กว่าไม่มีรายงานเลย
+    """
+    out = {}
+    try:
+        import forecast as FC
+        out["forecast"] = FC.forecast_all(R)
+    except Exception as e:
+        out["forecast_error"] = f"{type(e).__name__}: {e}"
+    try:
+        import risk as RK
+        out["risk"] = RK.assess(data, R)
+    except Exception as e:
+        out["risk_error"] = f"{type(e).__name__}: {e}"
+    try:
+        import quality as QL
+        out["quality"] = QL.assess_all(data, R, v=v, rf=rf)
+    except Exception as e:
+        out["quality_error"] = f"{type(e).__name__}: {e}"
+    try:
+        import news_ai as NA
+        out["news"] = NA.analyze(data.get("ticker", ""), limit=25)
+    except Exception as e:
+        out["news_error"] = f"{type(e).__name__}: {e}"
+    try:
+        import recommend as RC
+        vv = dict(v)
+        vv["ความน่าเชื่อถือ"] = b.get("ความน่าเชื่อถือ")
+        out["reco"] = RC.build(data, R, v=vv, risk=out.get("risk"),
+                               qual=out.get("quality"), fc=out.get("forecast"),
+                               news=out.get("news"))
+    except Exception as e:
+        out["reco_error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 def analyze_all(ticker, wacc=None, g1=None, rf=None, mos=None, refresh=False):
     """
     คำนวณทุกอย่างครั้งเดียว คืน (data, S, R, v, b)
@@ -711,11 +966,11 @@ def analyze_all(ticker, wacc=None, g1=None, rf=None, mos=None, refresh=False):
     return data, S, R, v, b
 
 
-def render_pdf(data, S, R, v, b, out_dir=None) -> Path:
+def render_pdf(data, S, R, v, b, out_dir=None, ext=None) -> Path:
     """สร้างไฟล์ PDF จากผลที่คำนวณไว้แล้ว"""
     setup_matplotlib_font()
     set_chart_theme(dark=False)   # PDF พิมพ์ลงกระดาษขาว จึงใช้ธีมสว่างเสมอ
-    html = build_html(data, S, R, v, b)
+    html = build_html(data, S, R, v, b, ext=ext)
     out = Path(out_dir) if out_dir else OUT_DIR
     out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d")
@@ -729,7 +984,8 @@ def make_report(ticker, wacc=None, g1=None, rf=None, mos=None,
                 refresh=False, out_dir=None) -> Path:
     setup_matplotlib_font()
     data, S, R, v, b = analyze_all(ticker, wacc, g1, rf, mos, refresh)
-    return render_pdf(data, S, R, v, b, out_dir)
+    ext = extras(data, R, v, b, rf=rf)
+    return render_pdf(data, S, R, v, b, out_dir, ext=ext)
 
 
 # ---------------------------------------------------------------------------
