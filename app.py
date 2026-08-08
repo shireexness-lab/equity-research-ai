@@ -365,6 +365,13 @@ if MODE.startswith("คัดกรอง"):
         universe = full[:cap] if cap else full
         st.caption(f"จะคัดกรอง {len(universe):,} ตัว")
 
+    # ---------- ชื่อชุดข้อมูลสำหรับเก็บไว้ใช้ซ้ำ ----------
+    # ต้องผูกกับ "ขอบเขตที่คัดกรอง" ไม่ใช่แค่ชื่อตลาด
+    # ไม่อย่างนั้นข้อมูลของกลุ่มธนาคารจะไปทับข้อมูลของทั้งตลาด
+    snap_key = key if bulk else f"{key}-{len(universe)}"
+    if key == "thai":
+        snap_key = f"thai-{mkt}-{ind}-{len(universe)}"
+
     qa1, qa2 = st.columns([2, 1])
     with qa1:
         qmode = st.radio(
@@ -404,7 +411,38 @@ if MODE.startswith("คัดกรอง"):
     f_nm = g[7].number_input("กำไรสุทธิขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0)
     f_cap = g[8].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
 
-    if st.button("เริ่มคัดกรอง", type="primary", use_container_width=True):
+    # ---------- ปุ่มดึงข้อมูล ----------
+    # มี 2 ทาง : ดึงใหม่ (ช้า แต่สด) หรือ ใช้ที่บันทึกไว้ (เร็วทันที)
+    import snapshot
+
+    # ห่อด้วย cache เพราะทุกครั้งที่กดปุ่มใด ๆ Streamlit จะรันไฟล์นี้ใหม่ทั้งหมด
+    # ถ้าไม่ห่อ จะยิงไป Google Drive ทุกครั้งที่ขยับหน้าจอ ทำให้หน่วง
+    @st.cache_data(show_spinner=False, ttl=300)
+    def _peek(k):
+        return snapshot.info(k)
+
+    _saved, _smeta = _peek(snap_key)
+    r1, r2 = st.columns([2, 3])
+    run_fresh = r1.button("เริ่มคัดกรอง (ดึงข้อมูลใหม่)", type="primary",
+                          use_container_width=True)
+    use_saved = False
+    if _saved is not None:
+        age = _smeta.get("อายุ (ชม.)", 0)
+        age_txt = f"{age:.0f} ชม.ที่แล้ว" if age >= 1 else "เมื่อสักครู่"
+        use_saved = r2.button(
+            f"⚡ ใช้ข้อมูลที่บันทึกไว้ ({_smeta.get('จำนวนแถว',0):,} ตัว · {age_txt})",
+            use_container_width=True,
+            help=f"อ่านจาก {_smeta.get('ที่มา')} — ได้ผลทันทีไม่ต้องรอดึงใหม่")
+    else:
+        r2.caption("ยังไม่มีข้อมูลที่บันทึกไว้สำหรับขอบเขตนี้ "
+                   "— ดึงครั้งแรกแล้วครั้งต่อไปจะเรียกได้ทันที")
+
+    if use_saved:
+        st.session_state["quick_df"] = _saved
+        st.caption(f"ใช้ข้อมูลที่บันทึกไว้เมื่อ {_smeta.get('บันทึกเมื่อ','-')} "
+                   f"(จาก {_smeta.get('ที่มา')})")
+
+    if run_fresh:
         bar, note = st.progress(0.0), st.empty()
 
         def on_q(i, total, t):
@@ -414,9 +452,19 @@ if MODE.startswith("คัดกรอง"):
         try:
             if bulk:
                 from market import us_market_snapshot
-                st.session_state["quick_df"] = us_market_snapshot(progress=on_q)
+                fresh = us_market_snapshot(progress=on_q)
             else:
-                st.session_state["quick_df"] = quick_screen(universe, progress=on_q)
+                fresh = quick_screen(universe, progress=on_q)
+            st.session_state["quick_df"] = fresh
+            # เก็บไว้ใช้ครั้งหน้า — เฉพาะตัวเลขในตาราง ไม่มีรายละเอียดอื่น
+            r = snapshot.save(snap_key, fresh,
+                              extra={"ขอบเขต": snap_key, "ตลาด": key})
+            _peek.clear()                     # ให้ปุ่ม ⚡ เห็นของใหม่ทันที
+            where = " + ".join([w for w, ok in
+                                (("เครื่องนี้", r["local"]),
+                                 ("Google Drive", r["drive"])) if ok]) or "ไม่ได้บันทึก"
+            st.caption(f"บันทึกผลไว้แล้ว : {where} · {r.get('ขนาด (KB)', 0)} KB "
+                       "— ครั้งหน้ากดปุ่ม ⚡ เรียกได้ทันที")
         except Exception as e:
             st.error(f"ดึงข้อมูลไม่สำเร็จ — {type(e).__name__}: {e}\n\n"
                      "ถ้าเป็นการคัดกรองทั้งตลาด ลองรันบน MacBook แทน:\n\n"
@@ -512,17 +560,35 @@ if MODE.startswith("คัดกรอง"):
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
         else:
-            cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "P/S", "D/E",
+            # วางธงเตือนไว้ต้นตารางติดกับชื่อหุ้น — ถ้าอยู่ขวาสุดจะโดนตัดจนมองไม่เห็น
+            cols = ["ticker", "⚠️", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "P/S", "D/E",
                     "ROE (%)", "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)",
-                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม", "⚠️"]
-            show = res[[c for c in cols if c in res.columns]].head(200).copy()
+                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
+            # จำนวนแถวที่แสดง — ค่าเริ่มต้นคือ "ทั้งหมด"
+            # เหตุผล : การตัดที่ 200 ทำให้หุ้นที่ผ่านเกณฑ์อีก 600 ตัวหายไปเงียบ ๆ
+            #          ผู้ใช้ควรเห็นทุกตัวที่ผ่านเกณฑ์ ไม่ใช่แค่ส่วนบน
+            n_show = st.selectbox(
+                "จำนวนแถวที่แสดง", ["ทั้งหมด", 100, 300, 500],
+                index=0,
+                help="ตารางเลื่อนดูได้ในตัวเอง — เลือกน้อยลงได้ถ้าเครื่องหน่วง")
+            show = res[[c for c in cols if c in res.columns]]
+            if n_show != "ทั้งหมด":
+                show = show.head(int(n_show))
+            show = show.copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
             # link_cols = ทำชื่อหุ้นให้กดได้ → เด้งไปวิเคราะห์รายตัวทันที
             html_table(show, first_col="อันดับ", trim_year=False,
-                       max_height=560, link_cols=("ticker",))
+                       max_height=640, link_cols=("ticker",))
+            if quality:
+                st.caption("**ความหมายของธง ⚠️** — `ขาดทุน` กำไรสุทธิติดลบ · "
+                           "`ทุนติดลบ` ส่วนของผู้ถือหุ้นติดลบ · "
+                           "`เล็ก` มูลค่าตลาดต่ำกว่าเกณฑ์ · "
+                           "`FCF?` FCF Yield สูงผิดปกติ · `P/E?` P/E ต่ำผิดปกติ  \n"
+                           "ตัวเลขทุกช่องเป็นค่าจริงของหุ้นตัวนั้น ธงเป็นเพียงข้อสังเกตเพิ่มเติม")
+            _n = ("ครบทั้ง" if len(show) == len(res) else "แสดง")
             st.caption(f"เรียงตาม **{sort_col}** ({order}) · "
-                       f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
+                       f"{_n} {len(show):,} ตัวจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
                        "· **กดที่ชื่อหุ้น** เพื่อดูการวิเคราะห์รายตัวทันที "
                        "· เลื่อนลงในตารางเพื่อดูตัวถัดไป")
             st.download_button("ดาวน์โหลดผลทั้งหมด (CSV)",

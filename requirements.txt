@@ -23,3 +23,8 @@ weasyprint>=62.0
 
 # --- Part 16: Web App ---
 streamlit>=1.40
+
+# --- ที่เก็บผลคัดกรองไว้ใช้ซ้ำบน Google Drive (ไม่บังคับ) ---
+# ถ้าไม่ตั้งค่า Google Drive ระบบยังทำงานได้ปกติ แค่เก็บไว้ในเครื่องอย่างเดียว
+google-api-python-client>=2.100
+google-auth>=2.30

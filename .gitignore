@@ -6,6 +6,11 @@
 .env
 *.key
 
+# กุญแจ Google Drive — ถ้าหลุดขึ้น GitHub คนอื่นจะเขียนไฟล์ใน Drive ได้
+gdrive_service_account.json
+*service_account*.json
+*credentials*.json
+
 # ห้องแยกของ Python
 .venv/
 venv/

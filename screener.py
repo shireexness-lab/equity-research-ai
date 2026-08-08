@@ -204,16 +204,17 @@ def quality_flags(df, min_mcap=DEFAULT_MIN_MCAP,
     out = []
     for i in df.index:
         w = []
+        # ใช้คำสั้นที่สุดที่ยังเข้าใจได้ เพราะคอลัมน์นี้ต้องอยู่ใกล้ชื่อหุ้น
         if pd.notna(nm.get(i)) and nm[i] <= 0:
             w.append("ขาดทุน")
         if pd.notna(pbv.get(i)) and pbv[i] <= 0:
-            w.append("ส่วนทุนติดลบ")
+            w.append("ทุนติดลบ")
         if pd.notna(cap.get(i)) and cap[i] < min_mcap:
-            w.append("มูลค่าตลาดเล็ก")
+            w.append("เล็ก")
         if pd.notna(fcy.get(i)) and abs(fcy[i]) > max_fcf_yield:
-            w.append("FCF ผิดปกติ")
+            w.append("FCF?")
         if pd.notna(pe.get(i)) and 0 < pe[i] < MIN_SENSIBLE_PE:
-            w.append("P/E ผิดปกติ")
+            w.append("P/E?")
         out.append(" · ".join(w))
     return pd.Series(out, index=df.index)
 
