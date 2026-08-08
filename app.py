@@ -293,46 +293,56 @@ if MODE.startswith("คัดกรอง"):
             "ไม่ทำ DCF จึงเร็วกว่าราว 20 เท่า ใช้ได้กับทั้งตลาด\n\n"
             "หลังคัดได้แล้ว ให้เอารายชื่อไปวิเคราะห์ลึกในโหมดถัดไป")
 
-    q1, q2 = st.columns([2, 1])
-    with q1:
-        uni = st.radio("ตลาด", ["หุ้นไทย", "หุ้นสหรัฐยอดนิยม",
-                                "หุ้นสหรัฐทั้งตลาด", "ไทย + สหรัฐทั้งตลาด"],
-                       horizontal=True)
-    key = {"หุ้นไทย": "thai", "หุ้นสหรัฐยอดนิยม": "us",
-           "หุ้นสหรัฐทั้งตลาด": "us-all", "ไทย + สหรัฐทั้งตลาด": "all"}[uni]
-    full = preset(key)
-    with q2:
-        cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, len(full),
-                              min(300, len(full)), 50)
-    universe = full[:cap] if cap else full
+    uni = st.radio("ตลาด",
+                   ["🇺🇸 หุ้นสหรัฐทั้งตลาด (เร็ว)", "🇹🇭 หุ้นไทย",
+                    "หุ้นสหรัฐยอดนิยม 39 ตัว"],
+                   horizontal=True)
 
-    mins = len(universe) * 1.5 / 8 / 60
-    if len(universe) > 400:
-        st.warning(f"เลือกมา **{len(universe):,} ตัว** — คาดว่าใช้เวลาราว "
-                   f"**{mins:.0f} นาที** และอาจเกินหน่วยความจำของเซิร์ฟเวอร์ฟรี (1 GB)\n\n"
-                   f"แนะนำให้รันบน MacBook แทน แล้วค่อยดูผลจากไฟล์ CSV:\n\n"
-                   f"```\npython3 screener.py --quick --list {key} --csv ผลคัดกรอง.csv\n```")
+    if uni.startswith("🇺🇸"):
+        st.success("**วิธีเร็ว** — ดึงงบการเงินของทุกบริษัทในตลาดจาก SEC "
+                   "ด้วยเพียง **8 คำขอ** (แทนที่จะเป็น 10,000 คำขอ) "
+                   "แล้วดึงราคาทีละ 180 ตัว\n\n"
+                   "⏱️ ทั้งตลาด ~10,000 บริษัท ใช้เวลาราว **3–6 นาที**")
+        universe, key, bulk = None, "us-all", True
     else:
+        bulk = False
+        key = "thai" if uni.startswith("🇹🇭") else "us"
+        full = preset(key)
+        cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, len(full), 0, 25)
+        universe = full[:cap] if cap else full
+        mins = len(universe) * 1.5 / 8 / 60
         st.caption(f"จะคัดกรอง {len(universe):,} ตัว — คาดว่าราว {mins:.1f} นาที")
 
     st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
-    g = st.columns(6)
+    g = st.columns(7)
     f_pe = g[0].number_input("P/E ไม่เกิน", 0.0, 200.0, 0.0, 1.0)
     f_pbv = g[1].number_input("P/BV ไม่เกิน", 0.0, 50.0, 0.0, 0.5)
     f_roe = g[2].number_input("ROE ขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0)
     f_fcf = g[3].number_input("FCF Yield ขั้นต่ำ (%)", 0.0, 50.0, 0.0, 0.5)
     f_div = g[4].number_input("ปันผลขั้นต่ำ (%)", 0.0, 20.0, 0.0, 0.5)
-    f_cap = g[5].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
+    f_de = g[5].number_input("D/E ไม่เกิน (เท่า)", 0.0, 20.0, 0.0, 0.25,
+                             help="หนี้สินรวม ÷ ส่วนของผู้ถือหุ้น "
+                                  "ยิ่งต่ำยิ่งปลอดภัย · ธนาคารจะสูงเป็นปกติ")
+    f_cap = g[6].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
 
     if st.button("เริ่มคัดกรอง", type="primary", use_container_width=True):
         bar, note = st.progress(0.0), st.empty()
 
         def on_q(i, total, t):
             bar.progress(min(i / total, 1.0))
-            if i % 20 == 0 or i == total:
-                note.caption(f"ดึงข้อมูลแล้ว {i:,}/{total:,}")
+            note.caption(f"{t} — {i:,}/{total:,}")
 
-        st.session_state["quick_df"] = quick_screen(universe, progress=on_q)
+        try:
+            if bulk:
+                from market import us_market_snapshot
+                st.session_state["quick_df"] = us_market_snapshot(progress=on_q)
+            else:
+                st.session_state["quick_df"] = quick_screen(universe, progress=on_q)
+        except Exception as e:
+            st.error(f"ดึงข้อมูลไม่สำเร็จ — {type(e).__name__}: {e}\n\n"
+                     "ถ้าเป็นการคัดกรองทั้งตลาด ลองรันบน MacBook แทน:\n\n"
+                     "```\npython3 market.py --csv us_market.csv\n```")
+        bar.progress(1.0)
         note.empty()
 
     qdf = st.session_state.get("quick_df")
@@ -340,8 +350,27 @@ if MODE.startswith("คัดกรอง"):
         got = qdf[qdf["ปัญหา"].eq("")]
         res = quick_filter(qdf, max_pe=f_pe or None, max_pbv=f_pbv or None,
                            min_roe=f_roe or None, min_fcf_yield=f_fcf or None,
-                           min_div=f_div or None, min_mcap=f_cap or None)
-        res = res.sort_values("P/E", na_position="last")
+                           min_div=f_div or None, min_mcap=f_cap or None,
+                           max_de=f_de or None)
+
+        # ---------- จัดเรียงตามหัวข้อที่เลือก ----------
+        # ค่าเริ่มต้นของแต่ละหัวข้อตั้งให้ "ตัวที่น่าสนใจอยู่บน" โดยอัตโนมัติ
+        #   P/E, P/BV, P/S, D/E  → น้อยไปมาก (ยิ่งต่ำยิ่งน่าสนใจ)
+        #   ROE, FCF Yield, ปันผล, มูลค่าตลาด → มากไปน้อย
+        SORTABLE = ["P/E", "P/BV", "P/S", "D/E", "ROE (%)", "FCF Yield (%)",
+                    "ปันผล (%)", "อัตรากำไรสุทธิ (%)", "มูลค่าตลาด (ล้าน)",
+                    "ราคา", "ticker"]
+        ASC_BY_DEFAULT = {"P/E", "P/BV", "P/S", "D/E", "ticker"}
+        s1, s2 = st.columns([2, 1])
+        with s1:
+            sort_col = st.selectbox("จัดเรียงตาม", SORTABLE, index=0)
+        with s2:
+            order = st.radio("ลำดับ", ["น้อย → มาก", "มาก → น้อย"],
+                             index=0 if sort_col in ASC_BY_DEFAULT else 1,
+                             horizontal=True, label_visibility="collapsed")
+        if sort_col in res.columns:
+            res = res.sort_values(sort_col, ascending=(order.startswith("น้อย")),
+                                  na_position="last").reset_index(drop=True)
         k = st.columns(3)
         metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}")
         metric_card(k[1], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
@@ -351,49 +380,81 @@ if MODE.startswith("คัดกรอง"):
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
         else:
-            cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "ROE (%)",
-                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
+            cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "P/S", "D/E",
+                    "ROE (%)", "อัตรากำไรสุทธิ (%)", "FCF Yield (%)", "ปันผล (%)",
+                    "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
             show = res[[c for c in cols if c in res.columns]].head(200).copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
             # link_cols = ทำชื่อหุ้นให้กดได้ → เด้งไปวิเคราะห์รายตัวทันที
             html_table(show, first_col="อันดับ", trim_year=False,
                        max_height=560, link_cols=("ticker",))
-            st.caption(f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
+            st.caption(f"เรียงตาม **{sort_col}** ({order}) · "
+                       f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
                        "· **กดที่ชื่อหุ้น** เพื่อดูการวิเคราะห์รายตัวทันที "
                        "· เลื่อนลงในตารางเพื่อดูตัวถัดไป")
             st.download_button("ดาวน์โหลดผลทั้งหมด (CSV)",
                                res.to_csv(index=False).encode("utf-8-sig"),
                                "ผลคัดกรอง.csv", "text/csv")
 
-            # ---------- ติ๊กเลือกหลายตัวส่งไปวิเคราะห์ลึก ----------
+            # ---------- ช่องติ๊กเลือกหุ้นทีละตัว ----------
             st.markdown("---")
-            st.markdown("### เลือกหุ้นไปวิเคราะห์ลึก")
+            st.markdown("### ☑️ ติ๊กเลือกหุ้นไปวิเคราะห์ลึกหรือเปรียบเทียบ")
             st.caption("ชั้นคัดกรองบอกได้แค่ว่า 'ตัวเลขสรุปดูน่าสนใจ' "
                        "ยังไม่ได้ประเมินมูลค่า — เลือกตัวที่สนใจส่งไปวิเคราะห์เต็มรูปแบบ")
 
-            opts = list(res["ticker"].head(200))
-            labels = {t: f"{t} — {str(n)[:28]}"
-                      for t, n in zip(res["ticker"], res["ชื่อบริษัท"])}
-            sel = st.multiselect("ติ๊กเลือกได้หลายตัว", opts,
-                                 format_func=lambda t: labels.get(t, t),
-                                 placeholder="พิมพ์เพื่อค้นหา หรือกดเลือกจากรายการ")
+            picked = st.session_state.setdefault("picked", set())
+            PER_PAGE = 25
+            n_pages = max(1, (len(res) + PER_PAGE - 1) // PER_PAGE)
+            pg = st.number_input(f"หน้า (ทั้งหมด {n_pages} หน้า · {len(res):,} ตัว)",
+                                 1, n_pages, 1, 1)
+            page = res.iloc[(pg - 1) * PER_PAGE: pg * PER_PAGE]
 
-            b1, b2, b3 = st.columns(3)
+            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "ราคา", "P/E", "P/BV",
+                     "D/E", "ROE (%)", "FCF Y (%)"]
+            WIDTHS = [0.6, 1.4, 2.8, 1.0, 0.9, 0.9, 0.9, 1.1, 1.1]
+            hd = st.columns(WIDTHS)
+            for col, txt in zip(hd, HEADS):
+                col.markdown(f"<span class='muted'><b>{txt}</b></span>",
+                             unsafe_allow_html=True)
+
+            for _, r in page.iterrows():
+                t = r["ticker"]
+                cc = st.columns(WIDTHS)
+                on = cc[0].checkbox(" ", value=t in picked, key=f"cb_{t}",
+                                    label_visibility="collapsed")
+                picked.add(t) if on else picked.discard(t)
+                cc[1].markdown(f"<a class='tk' target='_self' href='?t={t}'>{t}</a>",
+                               unsafe_allow_html=True)
+                cc[2].caption(str(r["ชื่อบริษัท"])[:34])
+                cc[3].caption(_cell(r["ราคา"]))
+                cc[4].caption(_cell(r.get("P/E"), 1))
+                cc[5].caption(_cell(r.get("P/BV"), 2))
+                cc[6].caption(_cell(r.get("D/E"), 2))
+                cc[7].caption(_cell(r.get("ROE (%)"), 1))
+                cc[8].caption(_cell(r.get("FCF Yield (%)"), 1))
+
+            sel = [t for t in res["ticker"] if t in picked]
+            st.markdown(f"**เลือกไว้ {len(sel)} ตัว** "
+                        + (f"— {', '.join(sel[:15])}" + (" ..." if len(sel) > 15 else "")
+                           if sel else "— ยังไม่ได้เลือก"))
+
+            b1, b2, b3, b4 = st.columns(4)
             with b1:
-                st.button(f"เลือก 10 อันดับแรก", use_container_width=True,
-                          on_click=lambda: st.session_state.update(
-                              {"handoff": opts[:10], "mode": MODES[2]}),
-                          disabled=not opts)
+                st.button("เลือกทั้งหน้านี้", use_container_width=True,
+                          on_click=lambda p=list(page["ticker"]): [
+                              st.session_state["picked"].add(x) for x in p])
             with b2:
-                st.button(f"วิเคราะห์ลึก {len(sel)} ตัวที่เลือก",
+                st.button("ล้างที่เลือก", use_container_width=True,
+                          on_click=lambda: st.session_state["picked"].clear())
+            with b3:
+                st.button(f"วิเคราะห์ลึก ({len(sel)})",
                           type="primary", use_container_width=True,
                           disabled=len(sel) == 0,
                           on_click=lambda: st.session_state.update(
                               {"handoff": sel, "mode": MODES[2]}))
-            with b3:
-                st.button(f"เปรียบเทียบ {len(sel)} ตัวที่เลือก",
-                          use_container_width=True,
+            with b4:
+                st.button(f"เปรียบเทียบ ({len(sel)})", use_container_width=True,
                           disabled=not (2 <= len(sel) <= 10),
                           help="เลือก 2–10 ตัวจึงจะเปรียบเทียบได้",
                           on_click=lambda: st.session_state.update(
@@ -557,9 +618,26 @@ if MODE.startswith("วิเคราะห์ลึก"):
         if under.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ที่ตั้งไว้ — ลองลดส่วนลดขั้นต่ำลง")
         else:
+            DEEP_SORT = ["ส่วนลด (%)", "คะแนน", "ROE เฉลี่ย (%)", "D/E",
+                         "CAGR รายได้ (%)", "ปีข้อมูล", "ราคา", "ticker"]
+            DEEP_ASC = {"D/E", "ticker", "ราคา"}
+            z1, z2 = st.columns([2, 1])
+            with z1:
+                d_sort = st.selectbox("จัดเรียงตาม", DEEP_SORT, index=0,
+                                      key="deep_sort")
+            with z2:
+                d_ord = st.radio("ลำดับ", ["น้อย → มาก", "มาก → น้อย"],
+                                 index=0 if d_sort in DEEP_ASC else 1,
+                                 horizontal=True, label_visibility="collapsed",
+                                 key="deep_order")
+            if d_sort in under.columns:
+                under = under.sort_values(d_sort, ascending=d_ord.startswith("น้อย"),
+                                          na_position="last").reset_index(drop=True)
+
             cols = ["ticker", "ชื่อบริษัท", "ราคา", "มูลค่าที่ประเมินได้",
-                    "ส่วนลด (%)", "โซน", "ความน่าเชื่อถือ", "คะแนน",
-                    "ปีข้อมูล", "ROE เฉลี่ย (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
+                    "ส่วนลด (%)", "โซน", "ความน่าเชื่อถือ", "คะแนน", "ปีข้อมูล",
+                    "ROE เฉลี่ย (%)", "D/E", "Net Debt/EBITDA",
+                    "CAGR รายได้ (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
             show = under[[c for c in cols if c in under.columns]].copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             html_table(show, first_col="อันดับ", trim_year=False,

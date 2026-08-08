@@ -153,6 +153,14 @@ def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None
 # ชั้นที่ 2 — วิเคราะห์ลึก (DCF เต็มรูปแบบ)
 # ===========================================================================
 
+def _last(table, row_name):
+    """ค่าปีล่าสุดของอัตราส่วนหนึ่ง — คืน None ถ้าไม่มีแถวนั้นหรือไม่มีข้อมูล"""
+    if row_name not in getattr(table, "index", []):
+        return None
+    s = pd.to_numeric(table.loc[row_name], errors="coerce").dropna()
+    return float(s.iloc[-1]) if len(s) else None
+
+
 def scan_one(ticker: str, rf=None, mos=None, refresh=False) -> dict:
     """
     วิเคราะห์หุ้น 1 ตัว คืนผลสรุปบรรทัดเดียว
@@ -181,6 +189,10 @@ def scan_one(ticker: str, rf=None, mos=None, refresh=False) -> dict:
             "ปีข้อมูล": v["ปีข้อมูล"],
             "ROE เฉลี่ย (%)": R["summary"].get("ROE เฉลี่ย (%)"),
             "CAGR รายได้ (%)": R["summary"].get("CAGR รายได้ (%)"),
+            # D/E ปีล่าสุด — ดูจากหนี้ที่มีดอกเบี้ยจริง ไม่ใช่หนี้สินรวม
+            "D/E": _last(R["table"], "D/E (หนี้มีดอกเบี้ย)"),
+            "Net Debt/EBITDA": _last(R["table"], "Net Debt / EBITDA"),
+            "Interest Coverage": _last(R["table"], "Interest Coverage"),
             "ตลาดคาดโต (%)": (v["อัตราโตที่ตลาดคาดหวัง"] * 100
                               if v.get("อัตราโตที่ตลาดคาดหวัง") is not None else None),
             "ใช้ DCF": "ใช่" if v.get("ใช้ DCF ได้ไหม") else "ไม่",
