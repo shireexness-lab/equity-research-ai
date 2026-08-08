@@ -107,14 +107,33 @@ def setup_matplotlib_font():
 
 # สีของ "ตัวกราฟ" (เส้น/แท่ง) ใช้ชุดเดียวกันทั้งสองธีม
 # เปลี่ยนเฉพาะสีตัวหนังสือและเส้นตาราง เพื่อให้อ่านได้ทั้งพื้นขาวและพื้นดำ
-_TXT = "#222222"
+_TXT = "#2b3440"
+_GRID = "#d8dee6"
 _TITLE = C_MAIN
 
 
-_LIGHT = {"main": "#1f4e79", "accent": "#c55a11", "good": "#2e7d32",
-          "bad": "#c62828", "grey": "#8a8a8a", "txt": "#222222"}
-_DARK = {"main": "#5b9bd5", "accent": "#f0873a", "good": "#66bb6a",
-         "bad": "#ef5350", "grey": "#9e9e9e", "txt": "#e6e6e6"}
+# ---------------------------------------------------------------------------
+# ชุดสี
+#
+# เลือกโดยยึด 2 ข้อ
+#   1. อ่านได้ทั้งพื้นขาวและพื้นดำ — ค่าความสว่างของสีคู่กันต้องต่างจากพื้นพอ
+#   2. **แยกกันได้แม้ตาบอดสี** ราว 8% ของผู้ชายแยกแดง-เขียวไม่ชัด
+#      จึงเลี่ยงคู่แดง-เขียวเป็นตัวสื่อความหมายหลัก ใช้น้ำเงิน-ส้มเป็นคู่หลักแทน
+#      (น้ำเงิน-ส้มเป็นคู่ที่คนตาบอดสีทุกแบบแยกออก)
+# ---------------------------------------------------------------------------
+_LIGHT = {"main": "#2563a8", "accent": "#e07b39", "good": "#2e8b57",
+          "bad": "#c1442e", "grey": "#9aa5b1", "txt": "#2b3440",
+          "grid": "#d8dee6", "fill": "#2563a8"}
+_DARK = {"main": "#63a4e8", "accent": "#f5a05a", "good": "#5cc98a",
+         "bad": "#e8705f", "grey": "#7d8896", "txt": "#dfe6ee",
+         "grid": "#2f3846", "fill": "#63a4e8"}
+
+# สัดส่วนกราฟ — กว้าง 7.6 นิ้ว สูง 3.1 นิ้ว = อัตราส่วนราว 2.45:1
+#
+# ทำไมขนาดนี้ : หน้าเว็บกว้างสุด 1900px ถ้ากราฟสูงเกินไปจะเลื่อนดูทีละกราฟ
+# ถ้าเตี้ยเกินไปเส้นจะเบียดกันจนอ่านแนวโน้มไม่ออก
+# 2.45:1 ใกล้เคียงอัตราส่วนที่ตาคนอ่านกราฟเส้นได้สบายที่สุด
+FIG_W, FIG_H = 7.6, 3.1
 
 
 def set_chart_theme(dark: bool = False):
@@ -128,14 +147,46 @@ def set_chart_theme(dark: bool = False):
     ทำไมต้องสลับสีเส้นด้วย ไม่ใช่แค่ตัวหนังสือ :
     น้ำเงินเข้ม #1f4e79 บนพื้นดำแทบมองไม่เห็น จึงต้องใช้น้ำเงินสว่างแทน
     """
-    global C_MAIN, C_ACCENT, C_GOOD, C_BAD, C_GREY, _TXT, _TITLE
+    global C_MAIN, C_ACCENT, C_GOOD, C_BAD, C_GREY, _TXT, _TITLE, _GRID
     p = _DARK if dark else _LIGHT
     C_MAIN, C_ACCENT, C_GOOD = p["main"], p["accent"], p["good"]
     C_BAD, C_GREY, _TXT = p["bad"], p["grey"], p["txt"]
+    _GRID = p["grid"]
     _TITLE = C_MAIN
     for k in ("text.color", "axes.labelcolor", "xtick.color", "ytick.color"):
         plt.rcParams[k] = _TXT
-    plt.rcParams["axes.edgecolor"] = _TXT
+
+    # ---- รูปลักษณ์รวมของกราฟ ----
+    # เอากรอบบนและขวาออก เหลือเฉพาะแกนที่จำเป็น
+    # กรอบสี่ด้านเป็นหมึกที่ไม่ได้สื่อข้อมูลอะไร แต่แย่งความสนใจจากเส้นข้อมูล
+    plt.rcParams.update({
+        "axes.edgecolor": _GRID,
+        "axes.linewidth": 0.8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "axes.grid.axis": "y",           # เส้นตารางแนวนอนพอ แนวตั้งรก
+        "grid.color": _GRID,
+        "grid.linewidth": 0.6,
+        "grid.alpha": 0.55,
+        "axes.axisbelow": True,          # เส้นตารางอยู่ใต้ข้อมูลเสมอ
+        "font.size": 9.5,
+        "axes.titlesize": 11.5,
+        "axes.titleweight": "bold",
+        "axes.titlepad": 10,
+        "axes.labelsize": 9.5,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "xtick.major.size": 0,           # ขีดบอกสเกลไม่จำเป็นเมื่อมีเส้นตาราง
+        "ytick.major.size": 0,
+        "legend.frameon": False,
+        "legend.fontsize": 9,
+        "lines.linewidth": 2.2,
+        "lines.markersize": 5,
+        "lines.solid_capstyle": "round",
+        "figure.dpi": 130,
+        "savefig.dpi": 130,
+    })
 
 
 def _fig_b64(fig) -> str:
@@ -147,11 +198,23 @@ def _fig_b64(fig) -> str:
 
 
 def _style(ax, title="", ylabel=""):
-    ax.set_title(title, fontsize=11, color=_TITLE, pad=10, fontweight="bold")
-    ax.set_ylabel(ylabel, fontsize=9, color=_TXT)
-    ax.grid(axis="y", alpha=0.25, linewidth=0.6, color=_TXT)
+    """
+    จัดรูปลักษณ์กราฟให้เหมือนกันทุกใบ
+
+    หลักที่ใช้ : ลบทุกอย่างที่ไม่ได้สื่อข้อมูล
+    กรอบบน-ขวา ขีดสเกล และเส้นตารางแนวตั้ง ไม่ได้ช่วยให้อ่านค่าง่ายขึ้น
+    แต่แย่งความสนใจจากเส้นข้อมูลซึ่งเป็นสิ่งที่เราอยากให้ดู
+    """
+    ax.set_title(title, fontsize=11.5, color=_TITLE, pad=10, fontweight="bold")
+    ax.set_ylabel(ylabel, fontsize=9.5, color=_TXT)
+    ax.grid(axis="y", alpha=0.55, linewidth=0.6, color=_GRID)
+    ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=8, colors=_TXT)
+    ax.spines[["left", "bottom"]].set_color(_GRID)
+    ax.spines[["left", "bottom"]].set_linewidth(0.8)
+    ax.tick_params(labelsize=9, colors=_TXT, length=0)
+    # เว้นขอบบนไว้เล็กน้อย ไม่ให้เส้นหรือแท่งชนขอบกราฟ
+    ax.margins(x=0.02, y=0.12)
 
 
 def chart_revenue_profit(R):
@@ -164,13 +227,16 @@ def chart_revenue_profit(R):
     # เหตุผล : แท่งซ้อนทับทำให้คนอ่านเข้าใจผิดว่า "รายได้ + กำไร" ต้องบวกกัน
     #          ทั้งที่กำไรเป็นส่วนหนึ่งของรายได้อยู่แล้ว
     x = np.arange(len(yrs))
-    fig, ax = plt.subplots(figsize=(7.2, 2.9))
-    ax.bar(x - 0.2, rev, width=0.4, color=C_MAIN, label="รายได้รวม")
-    ax.bar(x + 0.2, ni, width=0.4, color=C_ACCENT, label="กำไรสุทธิ")
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H))
+    ax.bar(x - 0.19, rev, width=0.36, color=C_MAIN, label="รายได้รวม",
+           zorder=3)
+    ax.bar(x + 0.19, ni, width=0.36, color=C_ACCENT, label="กำไรสุทธิ",
+           zorder=3)
     ax.set_xticks(x)
     ax.set_xticklabels(yrs, rotation=45 if len(yrs) > 8 else 0)
     _style(ax, "รายได้และกำไรสุทธิ", "พันล้าน")
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=9, frameon=False, ncol=3,
+              loc="upper left", bbox_to_anchor=(0, 1.02))
     return _fig_b64(fig)
 
 
@@ -184,7 +250,7 @@ def _line_chart(R, series, title, ylabel="%"):
     """
     t, yrs = R["table"], [y[:4] for y in R["years"]]
     plotted = 0
-    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H))
     for name, color in series:
         if name not in t.index:
             continue
@@ -197,7 +263,8 @@ def _line_chart(R, series, title, ylabel="%"):
         plt.close(fig)
         return None                        # ไม่มีอะไรให้วาด
     _style(ax, title, ylabel)
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=9, frameon=False, ncol=3,
+              loc="upper left", bbox_to_anchor=(0, 1.02))
     plt.xticks(rotation=45 if len(yrs) > 8 else 0)
     return _fig_b64(fig)
 
@@ -218,23 +285,28 @@ def chart_cashflow(R):
     if not (raw["ocf"].notna().any() or raw["fcf"].notna().any()):
         return None
     x = np.arange(len(yrs))
-    fig, ax = plt.subplots(figsize=(7.2, 2.9))
-    ax.bar(x - 0.2, raw["ocf"] / 1e9, width=0.4, color=C_MAIN, label="OCF")
-    ax.bar(x + 0.2, raw["fcf"] / 1e9, width=0.4, color=C_GOOD, label="FCF")
-    ax.plot(x, raw["capex"] / 1e9, color=C_BAD, lw=1.4, marker="o", ms=3, label="CapEx")
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H))
+    ax.bar(x - 0.19, raw["ocf"] / 1e9, width=0.36, color=C_MAIN, label="OCF",
+           zorder=3)
+    ax.bar(x + 0.19, raw["fcf"] / 1e9, width=0.36, color=C_GOOD, label="FCF",
+           zorder=3)
+    ax.plot(x, raw["capex"] / 1e9, color=C_ACCENT, lw=2.0, marker="o", ms=5,
+            label="CapEx", zorder=4)
     ax.set_xticks(x)
     ax.set_xticklabels(yrs, rotation=45 if len(yrs) > 8 else 0)
     _style(ax, "กระแสเงินสด", "พันล้าน")
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=9, frameon=False, ncol=3,
+              loc="upper left", bbox_to_anchor=(0, 1.02))
     return _fig_b64(fig)
 
 
 def chart_price_bands(data, b):
     prices = data.get("prices")
-    fig, ax = plt.subplots(figsize=(7.2, 3.1))
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H + 0.25))
     if isinstance(prices, pd.DataFrame) and not prices.empty and "Close" in prices:
         px = prices["Close"].dropna().tail(1800)   # ~7 ปีล่าสุด
-        ax.plot(px.index, px.values, lw=1.1, color=C_MAIN, label="ราคาปิด")
+        ax.plot(px.index, px.values, lw=1.6, color=C_MAIN, label="ราคาปิด",
+                zorder=3)
     colors = {"Strong Buy": C_GOOD, "Buy": "#7cb342", "Hold": C_GREY,
               "Reduce": "#ef6c00", "Sell": C_BAD}
     for name, (lo, hi) in b["bands"].items():
@@ -256,12 +328,13 @@ def chart_methods(v):
         return None
     names = [k for k, _ in items][::-1]
     vals = [x for _, x in items][::-1]
-    fig, ax = plt.subplots(figsize=(7.2, 0.42 * len(names) + 1.2))
+    fig, ax = plt.subplots(figsize=(FIG_W, max(2.2, 0.46 * len(names) + 1.3)))
     ax.barh(names, vals, color=C_MAIN, alpha=0.85)
     price = v["ราคาปัจจุบัน"]
     if price:
         ax.axvline(price, color=C_BAD, lw=1.6, label=f"ราคาตลาด {price:,.2f}")
-        ax.legend(fontsize=8, frameon=False)
+        ax.legend(fontsize=9, frameon=False, ncol=3,
+              loc="upper left", bbox_to_anchor=(0, 1.02))
     for i, val in enumerate(vals):
         ax.text(val, i, f" {val:,.0f}", va="center", fontsize=8, color=_TXT)
     _style(ax, "มูลค่าต่อหุ้นจากแต่ละวิธี", "")
@@ -275,14 +348,15 @@ def chart_pe_history(v):
     if not h or not isinstance(h.get("ตาราง"), pd.DataFrame) or h["ตาราง"].empty:
         return None
     t = h["ตาราง"]
-    fig, ax = plt.subplots(figsize=(7.2, 2.7))
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H - 0.2))
     ax.bar(t.index, t["P/E"], color=C_MAIN, alpha=0.8)
     ax.axhline(h["P/E ค่ากลาง"], color=C_ACCENT, ls="--", lw=1.3,
                label=f"ค่ากลางทั้งช่วง {h['P/E ค่ากลาง']:.1f}x")
     ax.axhline(h["P/E ค่ากลาง 5 ปีล่าสุด"], color=C_GOOD, ls="--", lw=1.3,
                label=f"ค่ากลาง 5 ปีล่าสุด {h['P/E ค่ากลาง 5 ปีล่าสุด']:.1f}x")
     _style(ax, "P/E ย้อนหลังรายปี", "เท่า")
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=9, frameon=False, ncol=3,
+              loc="upper left", bbox_to_anchor=(0, 1.02))
     plt.xticks(rotation=45 if len(t) > 8 else 0)
     return _fig_b64(fig)
 

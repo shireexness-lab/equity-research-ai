@@ -156,9 +156,18 @@ def make_pdf_bytes(ticker, wacc, g1, rf, mos, refresh):
         return Path(p).read_bytes(), Path(p).name
 
 
-def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียงพอสำหรับกราฟนี้"):
+def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียงพอสำหรับกราฟนี้", width=980):
+    """
+    แสดงกราฟด้วยความกว้างคงที่ ไม่ยืดเต็มจอ
+
+    ทำไมไม่ใช้ use_container_width=True :
+    หน้าเว็บกว้างได้ถึง 1900px ถ้ายืดกราฟเต็มความกว้าง ตัวหนังสือในกราฟ
+    (ซึ่งถูกวาดด้วยขนาดคงที่ตอนสร้างรูป) จะถูกขยายจนดูเบลอและใหญ่เกินสัดส่วน
+    980px ตรงกับขนาดที่ matplotlib วาดไว้จริง จึงคมที่สุด
+    """
     if b64:
-        st.image(io.BytesIO(base64.b64decode(b64)), use_container_width=True)
+        c = st.columns([1, 20, 1])          # จัดกึ่งกลาง เว้นขอบทั้งสองข้าง
+        c[1].image(io.BytesIO(base64.b64decode(b64)), width=width)
     else:
         st.caption(f"— {empty_msg}")
 
@@ -1369,9 +1378,9 @@ RP.setup_matplotlib_font()
 # กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
 RP.set_chart_theme(dark=DARK)
 
-t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
+t1, t2, t3, t4, t5, t6, t7, t9, t8 = st.tabs(
     ["ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า", "ช่วงราคา",
-     "พยากรณ์ 10 ปี", "ความเสี่ยง", "ข่าว & XD"])
+     "พยากรณ์ 10 ปี", "ความเสี่ยง", "คุณภาพ & กูรู", "ข่าว & XD"])
 
 with t1:
     a, bb = st.columns(2)
@@ -1836,6 +1845,104 @@ with t7:
         "ดาวน์โหลดผลประเมินความเสี่ยง (CSV)",
         RS["ตารางสรุป"].to_csv().encode("utf-8-sig"),
         f"ความเสี่ยง_{ticker}.csv", "text/csv")
+
+
+with t9:
+    import quality as QL
+
+    st.markdown("### 🏅 คุณภาพกิจการและคะแนนแบบกูรู")
+
+    @st.cache_data(show_spinner=False, ttl=1800)
+    def _qual(tk, _rid):
+        return QL.assess_all(data, R, v=v, rf=v.get("wacc_detail", {}).get("พันธบัตร (rf)"))
+
+    with st.spinner("กำลังให้คะแนน 4 โมดูล..."):
+        QA = _qual(ticker, id(R))
+
+    # ---- สรุป 4 โมดูล ----
+    mc4 = st.columns(4)
+    for col, key, label in zip(mc4, ("Module 2", "Module 3", "Module 4", "Module 5"),
+                               ("Quality Business", "Buffett Score",
+                                "Peter Lynch", "Howard Marks")):
+        m = QA[key]
+        sc = m["คะแนนรวม"]
+        metric_card(col, label, f"{sc:.0f} / 100" if sc is not None else "—",
+                    f"จากงบ {m['สัดส่วนจากงบ (%)']:.0f}%",
+                    "#2e7d32" if (sc or 0) >= 70 else
+                    "#ef6c00" if (sc or 0) >= 50 else "#c62828")
+
+    st.caption(
+        "**ป้ายที่มาคือส่วนสำคัญที่สุดของหน้านี้**  \n"
+        "`คำนวณ` วัดจากงบโดยตรง ตรวจสอบย้อนได้ · "
+        "`ตัวแทน` ใช้ตัวเลขอื่นแทนสิ่งที่วัดตรง ๆ ไม่ได้ **เป็นการอนุมาน ผิดได้** · "
+        "`ต้องดูเอง` ไม่มีข้อมูลให้ประเมิน ระบบให้เพียงคำถามที่ควรถาม")
+
+    def _render_module(m, note=None):
+        sc = m["คะแนนรวม"]
+        st.markdown(f"#### {m['ชื่อโมดูล']}"
+                    + (f" — **{sc:.1f} / 100**" if sc is not None else ""))
+        if note:
+            st.info(note)
+        st.caption(f"ให้คะแนนได้ {m['ให้คะแนนได้']}/{m['จำนวนหัวข้อ']} หัวข้อ · "
+                   f"มาจากงบโดยตรง {m['สัดส่วนจากงบ (%)']:.0f}% · "
+                   f"ต้องดูเอง {m['ต้องดูเอง']} หัวข้อ")
+
+        rows = []
+        for it in m["รายการ"]:
+            rows.append({
+                "หัวข้อ": it["หัวข้อ"],
+                "คะแนน": it["คะแนน"],
+                "น้ำหนัก": it.get("น้ำหนัก"),
+                "ที่มา": it["ที่มา"],
+                "หลักฐาน": it["หลักฐาน"] or "—",
+            })
+        tb = pd.DataFrame(rows).set_index("หัวข้อ")
+        if tb["น้ำหนัก"].isna().all():
+            tb = tb.drop(columns=["น้ำหนัก"])
+        html_table(tb, first_col="หัวข้อ", trim_year=False, fit=True,
+                   dec_cols={"คะแนน": 0, "น้ำหนัก": 0},
+                   left_cols=("ที่มา", "หลักฐาน"))
+
+        manual = [it for it in m["รายการ"] if it["ที่มา"] == QL.MANUAL]
+        if manual:
+            with st.expander(f"❓ {len(manual)} หัวข้อที่ต้องหาคำตอบเอง"):
+                for it in manual:
+                    st.markdown(f"**{it['หัวข้อ']}** — {it['หมายเหตุ']}")
+
+        with st.expander("📖 ที่มาและวิธีตีความแต่ละหัวข้อ"):
+            for it in m["รายการ"]:
+                if it["หมายเหตุ"]:
+                    st.markdown(f"**{it['หัวข้อ']}** ({it['ที่มา']})  \n"
+                                f"{it['หมายเหตุ']}")
+
+    q2, q3, q4, q5 = st.tabs(
+        ["Module 2 · คุณภาพกิจการ", "Module 3 · Buffett",
+         "Module 4 · Peter Lynch", "Module 5 · Howard Marks"])
+
+    with q2:
+        _render_module(QA["Module 2"])
+
+    with q3:
+        m = QA["Module 3"]
+        _render_module(m, f"**{m['ระดับ']}** — คะแนนถ่วงน้ำหนักตามหลัก 11 ข้อ "
+                          f"ของ Warren Buffett รวม 100 คะแนนพอดี")
+
+    with q4:
+        m = QA["Module 4"]
+        note = (f"จัดเป็นหุ้นประเภท **{m['ประเภทตาม Lynch']}** — "
+                f"{m['คำอธิบายประเภท']}")
+        if m.get("PEG") is not None:
+            note += f"  \nPEG = **{m['PEG']:.2f}**"
+        if m.get("อัตราโต EPS (%)") is not None:
+            note += f" · EPS โตเฉลี่ย {m['อัตราโต EPS (%)']:+.1f}% ต่อปี"
+        _render_module(m, note)
+
+    with q5:
+        m = QA["Module 5"]
+        _render_module(m, f"**{m['สรุปตำแหน่งวัฏจักร']}**  \n"
+                          "Howard Marks : *เราพยากรณ์อนาคตไม่ได้ "
+                          "แต่รู้ได้ว่าตอนนี้ยืนอยู่ตรงไหนของวัฏจักร* — "
+                          "หน้านี้จึงวัดตำแหน่ง ไม่ได้ทำนาย")
 
 
 with t8:
