@@ -406,6 +406,91 @@ def attach_growth(df: pd.DataFrame, growth: pd.DataFrame) -> pd.DataFrame:
 POSITIVE_ONLY_FILTER = ("P/E", "P/BV", "EV/EBITDA")
 
 
+def prescreen_rank(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    จัดอันดับ "โอกาสที่จะเป็น Strong Buy" จากข้อมูลชั้นคัดกรองเท่านั้น
+
+    ปัญหาที่แก้
+    -----------
+    คำแนะนำ Strong Buy รู้ได้จากการวิเคราะห์ลึกเท่านั้น ซึ่งใช้เวลา 30 วินาที/ตัว
+        หุ้นไทย  866 ตัว  = 7 ชั่วโมง
+        หุ้นสหรัฐ 6,000 ตัว = 50 ชั่วโมง
+    วิเคราะห์ทุกตัวจึงเป็นไปไม่ได้ในทางปฏิบัติ
+
+    วิธีนี้ใช้ตัวเลขที่มีอยู่แล้วในชั้นคัดกรอง (ไม่ต้องดึงข้อมูลเพิ่มเลย)
+    มาเรียงลำดับว่า **ควรเอาตัวไหนไปวิเคราะห์ลึกก่อน**
+
+    ให้น้ำหนักตามที่ recommend.py ใช้จริง
+    --------------------------------------
+    Strong Buy ต้องได้คะแนนรวม >= 82 ซึ่งเกิดได้ก็ต่อเมื่อ
+    ทั้งราคาถูก คุณภาพดี และความเสี่ยงต่ำ พร้อมกันทั้งสามอย่าง
+    ตัวที่ขาดข้อใดข้อหนึ่งอย่างชัดเจนจะไปไม่ถึง จึงไม่ต้องเสียเวลา 30 วินาทีกับมัน
+
+    ข้อจำกัดที่ต้องยอมรับ — สำคัญ
+    -------------------------------
+    **นี่คือการจัดลำดับความน่าจะเป็น ไม่ใช่การพิสูจน์**
+    ชั้นคัดกรองไม่มีข้อมูลย้อนหลังหลายปี จึงประเมิน "ความสม่ำเสมอ" และ
+    "มูลค่าที่แท้จริง" ไม่ได้ หุ้นบางตัวที่คะแนนพรีสกรีนกลาง ๆ
+    อาจกลายเป็น Strong Buy ตอนวิเคราะห์ลึก และตัวที่คะแนนสูงอาจไม่ผ่าน
+
+    ใช้เพื่อ **ลดเวลาจาก 7 ชั่วโมงเหลือ 1 ชั่วโมง** โดยยอมพลาดบางตัว
+    ถ้าต้องการครบจริง ๆ ให้รันทั้งหมดข้ามคืน
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+    n = lambda c: pd.to_numeric(out.get(c), errors="coerce")  # noqa: E731
+
+    pe, pbv, ev = n("P/E"), n("P/BV"), n("EV/EBITDA")
+    roe, gm, nm = n("ROE (%)"), n("อัตรากำไรขั้นต้น (%)"), n("อัตรากำไรสุทธิ (%)")
+    de, fcy, div = n("D/E"), n("FCF Yield (%)"), n("ปันผล (%)")
+    cap = n("มูลค่าตลาด (ล้าน)")
+
+    def band(s, cuts, scores, invert=False):
+        """ให้คะแนน 0-100 ตามช่วง — invert=True แปลว่ายิ่งน้อยยิ่งดี"""
+        r = pd.Series(np.nan, index=out.index)
+        for cut, sc in zip(cuts, scores):
+            m = (s <= cut) if not invert else (s >= cut)
+            r = r.where(r.notna(), np.where(m, sc, np.nan))
+        return pd.to_numeric(r, errors="coerce")
+
+    # ---- ราคาถูกไหม (แทนน้ำหนักมูลค่า 30%) ----
+    # ใช้ระดับสัมบูรณ์ เพราะชั้นคัดกรองไม่มีค่าเฉลี่ยย้อนหลังให้เทียบ
+    s_pe = band(pe.where(pe > 0), [8, 12, 16, 22, 999], [95, 82, 62, 40, 15])
+    s_pbv = band(pbv.where(pbv > 0), [0.8, 1.5, 2.5, 4, 999], [95, 80, 58, 35, 12])
+    s_ev = band(ev.where(ev > 0), [6, 9, 12, 18, 999], [95, 80, 58, 35, 12])
+    s_fcy = band(fcy, [12, 8, 5, 2, -999], [95, 80, 58, 35, 12], invert=True)
+    val = pd.concat([s_pe, s_pbv, s_ev, s_fcy], axis=1).mean(axis=1, skipna=True)
+
+    # ---- คุณภาพกิจการ (แทนน้ำหนักคุณภาพ + Buffett 35%) ----
+    s_roe = band(roe, [25, 18, 12, 6, -999], [95, 82, 60, 38, 12], invert=True)
+    s_gm = band(gm, [50, 35, 22, 12, -999], [92, 78, 58, 38, 15], invert=True)
+    s_nm = band(nm, [20, 12, 7, 3, -999], [95, 80, 58, 35, 12], invert=True)
+    qual = pd.concat([s_roe, s_gm, s_nm], axis=1).mean(axis=1, skipna=True)
+
+    # ---- ความเสี่ยง (แทนน้ำหนักความเสี่ยง 15%) ----
+    s_de = band(de, [0.3, 0.7, 1.2, 2.0, 999], [95, 80, 58, 32, 10])
+    s_cap = band(cap, [3000, 10000, 50000, 1e9], [45, 65, 85, 95], invert=True)
+    risk = pd.concat([s_de, s_cap], axis=1).mean(axis=1, skipna=True)
+
+    # ---- ปันผล (สัญญาณว่ากำไรเป็นเงินสดจริง) ----
+    s_div = band(div, [6, 4, 2, 0.5, -999], [90, 78, 62, 45, 30], invert=True)
+
+    out["คะแนนพรีสกรีน"] = (val * 0.40 + qual * 0.35 + risk * 0.18 + s_div * 0.07)
+
+    # หุ้นที่ขาดข้อมูลสำคัญ ประเมินไม่ได้ ต้องแยกออกไม่ให้ปนกับตัวที่มีข้อมูลครบ
+    have = pd.concat([pe, pbv, roe, nm], axis=1).notna().sum(axis=1)
+    out["ข้อมูลครบ (จาก 4)"] = have
+    out.loc[have < 3, "คะแนนพรีสกรีน"] = np.nan
+
+    out["โอกาสเป็น Strong Buy"] = pd.cut(
+        out["คะแนนพรีสกรีน"], [-1, 55, 68, 78, 101],
+        labels=["ต่ำ", "ปานกลาง", "สูง", "สูงมาก"])
+
+    return out.sort_values("คะแนนพรีสกรีน", ascending=False,
+                           na_position="last").reset_index(drop=True)
+
+
 def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,
                  min_mcap=None, min_div=None, max_de=None,
                  min_gross_margin=None, min_net_margin=None,

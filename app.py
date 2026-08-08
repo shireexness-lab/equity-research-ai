@@ -401,7 +401,7 @@ with tt2:
               help="สลับระหว่างธีมมืดและธีมสว่าง กราฟจะเปลี่ยนสีตามอัตโนมัติ")
 
 MODES = ["วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
-         "เปรียบเทียบ 2–10 ตัว"]
+         "เปรียบเทียบ 2–10 ตัว", "🏆 รายการ Strong Buy"]
 
 # ---------------------------------------------------------------------------
 # รับคำสั่ง "กดชื่อหุ้นในตารางแล้วมาวิเคราะห์รายตัว"
@@ -443,6 +443,116 @@ try:
     OPTIONS, LOOKUP = ticker_options()
 except Exception:
     OPTIONS, LOOKUP = [], {}
+
+# ---------------------------------------------------------------------------
+# โหมดรายการ Strong Buy — อ่านผลที่วิเคราะห์ลึกไว้แล้ว
+# ---------------------------------------------------------------------------
+if MODE.startswith("🏆"):
+    import tools_deep_scan as DS
+
+    st.markdown("### 🏆 รายการหุ้นตามคำแนะนำ")
+    st.info(
+        "**ทำไมต้องมีหน้านี้แยก** — คำแนะนำ Strong Buy รู้ได้จากการวิเคราะห์ลึก"
+        "เท่านั้น ซึ่งใช้เวลาราว **30 วินาทีต่อหุ้น 1 ตัว**  \n"
+        "หุ้นไทย 866 ตัว = 7 ชั่วโมง · หุ้นสหรัฐ 6,000 ตัว = 50 ชั่วโมง "
+        "— กดปุ่มบนเว็บแล้วรอไม่ได้  \n"
+        "จึงแยกเป็น **รันข้ามคืนบน MacBook → เปิดเว็บดูผลใน 2 วินาที**")
+
+    mk = st.radio("ตลาด", ["🇹🇭 หุ้นไทย", "🇺🇸 หุ้นสหรัฐ"], horizontal=True)
+    market = "thai" if mk.startswith("🇹🇭") else "us"
+
+    @st.cache_data(show_spinner=False, ttl=300)
+    def _deep(mkt):
+        return DS.load_results(mkt)
+
+    ddf, dmeta = _deep(market)
+
+    if ddf is None or ddf.empty:
+        st.warning(
+            f"**ยังไม่มีผลวิเคราะห์ลึกของตลาด {market}**\n\n"
+            "รันบน MacBook ก่อน (แนะนำให้เริ่มที่ 150 ตัว ใช้เวลาราว 1 ชั่วโมง)\n\n"
+            "```\neq\n"
+            f"python3 tools_deep_scan.py --{market} --top 150\n```\n\n"
+            "อยากได้ครบทุกตัวจริง ๆ ให้ใช้ `--all` แล้วรันข้ามคืน  \n"
+            "ถ้าปิดเครื่องกลางคัน รันใหม่ได้เลย ระบบจะทำต่อจากที่ค้างไว้\n\n"
+            "หลังรันเสร็จ ถ้าอยากให้มือถือเห็นด้วย :\n\n"
+            "```\ngit add data/snapshots\n"
+            "git commit -m 'ผลวิเคราะห์ลึก'\ngit push\n```")
+    else:
+        ok = ddf[ddf["ปัญหา"].eq("")] if "ปัญหา" in ddf.columns else ddf
+        age = dmeta.get("อายุ (ชม.)", 0)
+        st.caption(f"วิเคราะห์ไว้ **{len(ddf):,} ตัว** · สำเร็จ {len(ok):,} ตัว "
+                   f"· ข้อมูลอายุ {age:.0f} ชม. · "
+                   f"จาก{dmeta.get('ที่มา (ไทย)','-')}")
+
+        # ---- นับจำนวนแต่ละคำแนะนำ ----
+        cnt = DS.summarize(ddf)
+        cc6 = st.columns(6)
+        COLORS = {"Strong Buy": "#1b6b3a", "Buy": "#2e8b57",
+                  "Accumulate": "#6aa84f", "Hold": "#c9a227",
+                  "Reduce": "#d1793a", "Sell": "#c1442e"}
+        for col, lv in zip(cc6, DS.ORDER):
+            n_ = int(cnt.loc[lv, "จำนวน"]) if lv in cnt.index else 0
+            metric_card(col, lv, f"{n_:,} ตัว", None,
+                        COLORS[lv] if n_ else None)
+
+        pick_lv = st.multiselect(
+            "แสดงคำแนะนำระดับ", DS.ORDER,
+            default=["Strong Buy", "Buy"] if
+            (cnt.loc["Strong Buy", "จำนวน"] if "Strong Buy" in cnt.index else 0)
+            else ["Buy", "Accumulate"])
+
+        f1, f2 = st.columns(2)
+        min_rel = f1.slider("คะแนนความน่าเชื่อถือขั้นต่ำ", 0, 100, 0, 5)
+        min_yr = f2.slider("จำนวนปีข้อมูลขั้นต่ำ", 0, 15, 0, 1,
+                           help="หุ้นไทยมักมี 4 ปี · หุ้นสหรัฐได้ถึง 15 ปีจาก SEC")
+
+        sel = ok[ok["คำแนะนำ"].isin(pick_lv)] if pick_lv else ok.iloc[0:0]
+        if min_rel:
+            sel = sel[pd.to_numeric(sel["คะแนนความน่าเชื่อถือ"],
+                                    errors="coerce").fillna(0) >= min_rel]
+        if min_yr:
+            sel = sel[pd.to_numeric(sel["ปีข้อมูล"],
+                                    errors="coerce").fillna(0) >= min_yr]
+        sel = sel.sort_values("คะแนนรวม", ascending=False)
+
+        if sel.empty:
+            st.warning("ไม่มีหุ้นตัวใดตรงเงื่อนไข — ลองผ่อนเกณฑ์ลง")
+        else:
+            show = sel[[c for c in
+                        ["ticker", "คำแนะนำ", "คะแนนรวม", "ราคา",
+                         "มูลค่าที่ประเมินได้", "ส่วนลด (%)", "โซน",
+                         "ความน่าเชื่อถือ", "คะแนนความน่าเชื่อถือ", "ปีข้อมูล",
+                         "Buffett", "คุณภาพ", "ความเสี่ยง", "กลุ่ม",
+                         "ชื่อบริษัท"] if c in sel.columns]].copy()
+            show.index = [str(i) for i in range(1, len(show) + 1)]
+            html_table(show, first_col="อันดับ", trim_year=False, fit=True,
+                       max_height=620, sign_cols=("ส่วนลด (%)",),
+                       left_cols=("คำแนะนำ", "โซน", "ความน่าเชื่อถือ",
+                                  "กลุ่ม", "ชื่อบริษัท"),
+                       dec_cols={"คะแนนรวม": 1, "ปีข้อมูล": 0,
+                                 "คะแนนความน่าเชื่อถือ": 0, "Buffett": 0,
+                                 "คุณภาพ": 0, "ความเสี่ยง": 0})
+            st.download_button(
+                "ดาวน์โหลดรายการนี้ (CSV)",
+                sel.to_csv(index=False).encode("utf-8-sig"),
+                f"คำแนะนำ_{market}.csv", "text/csv")
+
+        if "Strong Buy" in pick_lv and not len(
+                ok[ok["คำแนะนำ"].eq("Strong Buy")]):
+            st.warning(
+                "**ไม่พบ Strong Buy — นี่เป็นเรื่องปกติ**  \n"
+                "Strong Buy ต้องได้คะแนนรวม **82 จาก 100** ซึ่งเกิดได้ก็ต่อเมื่อ "
+                "ราคาถูก · คุณภาพดี · ความเสี่ยงต่ำ · ข้อมูลน่าเชื่อถือ "
+                "**พร้อมกันทั้งสี่อย่าง**  \n"
+                "ถ้า Strong Buy หาได้ง่าย เกณฑ์นั้นก็ไม่มีความหมาย — "
+                "ให้ดู Buy และ Accumulate ประกอบด้วย")
+
+        st.error("⚠️ **ไม่ใช่คำแนะนำการลงทุน** — เป็นการสรุปตัวเลขเพื่อการศึกษา  \n"
+                 "ราคาเปลี่ยนทุกวัน ผลนี้เป็นภาพนิ่งของวันที่วิเคราะห์ "
+                 "· เปิดวิเคราะห์รายตัวเพื่อดูเหตุผลเต็มก่อนตัดสินใจเสมอ")
+    st.stop()
+
 
 # ---------------------------------------------------------------------------
 # โหมดคัดกรองทั้งตลาด (ชั้นที่ 1 — เร็ว)
