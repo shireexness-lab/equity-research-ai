@@ -566,6 +566,10 @@ COMPARE_ROWS = ([("ราคาตลาด", "ราคา", 2),
 MAX_COMPARE = 10
 MIN_COMPARE = 2
 
+# เครื่องหมายนำหน้าชื่อหมวดในตารางรวม — ชั้นแสดงผลใช้ตัวนี้แยกแถวหัวหมวด
+# ออกจากแถวข้อมูลปกติ เลือกอักขระที่ไม่มีทางปรากฏในชื่ออัตราส่วนจริง
+SECTION_MARK = "§ "
+
 
 def compare(tickers, rf=None, mos=None, refresh=False, progress=None):
     """
@@ -629,8 +633,22 @@ def compare(tickers, rf=None, mos=None, refresh=False, progress=None):
         if not tbl.empty:
             sections[name] = tbl
 
+    # ---- ตารางเดียวต่อเนื่อง ----
+    # แทรกแถวหัวหมวดคั่นไว้ในตารางเดียวกัน แทนการแยกเป็นหลายตาราง
+    # ข้อดี : หัวตาราง (ชื่อหุ้น) ตรึงอยู่บนสุดที่เดียว เลื่อนดูยาว ๆ แล้วยังรู้ว่า
+    #         คอลัมน์ไหนคือหุ้นตัวไหน ถ้าแยกหลายตารางต้องเลื่อนกลับขึ้นไปดูทุกครั้ง
+    # หัวหมวดใช้เครื่องหมาย § นำหน้า เพื่อให้ชั้นแสดงผลรู้ว่าต้องวาดเป็นแถบคั่น
+    parts = []
+    for name, tbl in sections.items():
+        head = pd.DataFrame([[""] * len(tbl.columns)],
+                            index=[SECTION_MARK + name], columns=tbl.columns)
+        parts.append(head)
+        parts.append(tbl)
+    full = pd.concat(parts) if parts else pd.DataFrame()
+
     return {"table": _build(COMPARE_ROWS),        # ตารางย่อ (เข้ากันได้กับของเดิม)
-            "sections": sections,                 # ตารางเต็มแบ่งเป็นหมวด
+            "sections": sections,                 # แยกเป็นหมวด (เผื่อใช้ที่อื่น)
+            "full": full,                         # ตารางเดียวต่อเนื่อง
             "raw": raw, "errors": errors,
             "winner": _pick_best(ok)}
 

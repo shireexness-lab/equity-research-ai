@@ -185,6 +185,10 @@ st.markdown("""
     สายตาลากจากคอลัมน์ซ้ายไปขวาไม่ติด อ่านผิดบรรทัดได้ง่าย */
  .fit .t { width:auto; min-width:min(420px, 100%); }
  .fit { display:block; overflow-x:auto; }
+ /* แถบคั่นหมวดในตารางเดียวยาว ๆ */
+ .t tr.sec td { padding:.55rem .75rem .3rem .75rem; font-weight:700;
+                font-size:.78rem; letter-spacing:.03em; opacity:.85;
+                border-bottom:none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -203,9 +207,16 @@ def _cell(x, dec=2):
     return str(x)
 
 
+# เครื่องหมายนำหน้าแถว "หัวหมวด" ในตารางเดียวยาว ๆ
+# ต้องตรงกับ screener.SECTION_MARK — ไม่ import ตรง ๆ เพราะ app.py จงใจ
+# เลื่อนการโหลด screener ไปทำตอนเข้าโหมดนั้นจริง เพื่อให้หน้าแรกขึ้นเร็ว
+SECTION_MARK = "§ "
+
+
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
                max_height=None, link_cols=(), sort_cols=(),
-               cur_sort=None, cur_asc=True, fit=False, left_cols=()):
+               cur_sort=None, cur_asc=True, fit=False, left_cols=(),
+               dec_cols=None):
     """
     แสดง DataFrame เป็นตาราง HTML
 
@@ -242,10 +253,19 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
         else:
             h.append(f"<th{' class=l' if c in left_cols else ''}>{c}</th>")
     h.append("</tr></thead><tbody>")
+    ncol = len(df.columns) + 1
     for name in df.index:
+        # แถวหัวหมวด — วาดเป็นแถบเดียวพาดทั้งความกว้าง ไม่มีช่องข้อมูล
+        # ทำให้ตารางยาว ๆ อ่านเป็นเรื่อง ๆ ได้ โดยหัวตารางยังตรึงอยู่บนสุดที่เดียว
+        if str(name).startswith(SECTION_MARK):
+            h.append(f"<tr class='sec'><td class='l' colspan='{ncol}'>"
+                     f"{str(name)[len(SECTION_MARK):]}</td></tr>")
+            continue
         h.append(f"<tr><td class='l'>{name}</td>")
         for c in df.columns:
-            val = _cell(df.loc[name, c], dec)
+            # จำนวนทศนิยมรายคอลัมน์ — คะแนนกับจำนวนปีเป็นจำนวนเต็ม
+            # ถ้าแสดง 40.00 หรือ 4.00 จะดูเหมือนค่าที่วัดละเอียด ทั้งที่เป็นการนับ
+            val = _cell(df.loc[name, c], (dec_cols or {}).get(c, dec))
             if c in left_cols:
                 h.append(f"<td class='l'>{val}</td>")
                 continue
@@ -853,19 +873,21 @@ if MODE.startswith("เปรียบเทียบ"):
                     f"{w['ความน่าเชื่อถือ']})  \n"
                     "การจัดอันดับนี้บอกได้แค่ว่า *ตัวไหนแพงน้อยกว่ากัน* "
                     "ไม่ได้แปลว่าตัวนั้นน่าซื้อ")
+        full = res.get("full")
         secs = res.get("sections") or {}
         view = st.radio(
             "ระดับรายละเอียด", ["ครบทุกหัวข้อ", "เฉพาะหัวข้อหลัก"],
             horizontal=True,
-            help="ครบทุกหัวข้อ = แสดงทุกตัวเลขที่ระบบคำนวณไว้แล้ว แบ่งเป็นหมวด")
+            help="ครบทุกหัวข้อ = แสดงทุกตัวเลขที่ระบบคำนวณไว้แล้ว "
+                 "เรียงต่อกันเป็นตารางเดียว แบ่งด้วยแถบหมวด")
 
-        if view.startswith("ครบ") and secs:
+        if view.startswith("ครบ") and full is not None and not full.empty:
             n_rows = sum(len(t) for t in secs.values())
-            st.caption(f"แสดง **{n_rows} หัวข้อ** ใน {len(secs)} หมวด · "
-                       "ทุกตัวเลขคำนวณจากงบการเงินย้อนหลัง ไม่ใช่ค่าสรุปสำเร็จรูป")
-            for name, tbl in secs.items():
-                st.markdown(f"**{name}**")
-                html_table(tbl, first_col="หัวข้อ", trim_year=False, fit=True)
+            st.caption(f"**{n_rows} หัวข้อ** ใน {len(secs)} หมวด · "
+                       "ทุกตัวเลขคำนวณจากงบการเงินย้อนหลัง ไม่ใช่ค่าสรุปสำเร็จรูป "
+                       "· หัวตารางตรึงไว้ เลื่อนลงได้โดยยังเห็นชื่อหุ้น")
+            html_table(full, first_col="หัวข้อ", trim_year=False, fit=True,
+                       max_height=720)
         else:
             html_table(res["table"], first_col="หัวข้อ", trim_year=False, fit=True)
 
@@ -982,10 +1004,37 @@ if MODE.startswith("วิเคราะห์ลึก"):
                     "ROE เฉลี่ย (%)", "D/E", "Net Debt/EBITDA",
                     "CAGR รายได้ (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
             show = under[[c for c in cols if c in under.columns]].copy()
+
+            # ---- ธงเตือนผลบวกลวง ----
+            # ส่วนลดมหาศาลที่มาจากข้อมูลน้อยหรือคะแนนต่ำ คือรูปแบบที่ผิดบ่อยที่สุด
+            # ของการทำ DCF — ไม่ใช่เพราะหุ้นถูก แต่เพราะสมมติฐานเพี้ยน
+            def _suspect(r):
+                w = []
+                d = pd.to_numeric(r.get("ส่วนลด (%)"), errors="coerce")
+                sc = pd.to_numeric(r.get("คะแนน"), errors="coerce")
+                yr = pd.to_numeric(r.get("ปีข้อมูล"), errors="coerce")
+                gm = pd.to_numeric(r.get("ตลาดคาดโต (%)"), errors="coerce")
+                cg = pd.to_numeric(r.get("CAGR รายได้ (%)"), errors="coerce")
+                if pd.notna(d) and d > 50 and pd.notna(sc) and sc < 50:
+                    w.append("ส่วนลดสูงแต่คะแนนต่ำ")
+                if pd.notna(yr) and yr < 6:
+                    w.append(f"ข้อมูลแค่ {yr:.0f} ปี")
+                # ตลาดคาดให้หดตัวแรง ทั้งที่อดีตโตดี = ตลาดเห็นอะไรที่งบยังไม่บอก
+                if pd.notna(gm) and pd.notna(cg) and gm < -10 and cg > 0:
+                    w.append("ตลาดคาดว่าจะหดตัว")
+                return " · ".join(w)
+
+            show["⚠️"] = [_suspect(r) for _, r in show.iterrows()]
             show.index = [str(i) for i in range(1, len(show) + 1)]
             html_table(show, first_col="อันดับ", trim_year=False,
-                       max_height=520, link_cols=("ticker",))
-            st.caption("**กดที่ชื่อหุ้น** เพื่อเปิดการวิเคราะห์รายตัวพร้อมรายงาน PDF")
+                       max_height=520, link_cols=("ticker",),
+                       dec_cols={"คะแนน": 0, "ปีข้อมูล": 0})
+            st.caption(
+                "**กดที่ชื่อหุ้น** เพื่อเปิดการวิเคราะห์รายตัวพร้อมรายงาน PDF  \n"
+                "**ธง ⚠️** — `ส่วนลดสูงแต่คะแนนต่ำ` มูลค่าที่ประเมินได้อาจมาจาก"
+                "สมมติฐานที่ไม่มั่นคง · `ข้อมูลแค่ N ปี` สั้นเกินกว่าจะครอบคลุม"
+                "รอบธุรกิจหนึ่งรอบ (หุ้นวัฏจักรอย่างโรงกลั่นต้องการอย่างน้อย 10 ปี) · "
+                "`ตลาดคาดว่าจะหดตัว` ราคาปัจจุบันสะท้อนว่าตลาดเห็นอนาคตแย่กว่าที่งบในอดีตบอก")
 
         bad = df[~df["ปัญหา"].eq("")]
         if not bad.empty:
