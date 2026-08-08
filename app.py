@@ -429,18 +429,21 @@ if MODE.startswith("คัดกรอง"):
     if _saved is not None:
         age = _smeta.get("อายุ (ชม.)", 0)
         age_txt = f"{age:.0f} ชม.ที่แล้ว" if age >= 1 else "เมื่อสักครู่"
+        n_ok_saved = int(_saved["ปัญหา"].eq("").sum()) if "ปัญหา" in _saved else 0
         use_saved = r2.button(
-            f"⚡ ใช้ข้อมูลที่บันทึกไว้ ({_smeta.get('จำนวนแถว',0):,} ตัว · {age_txt})",
+            f"⚡ ใช้ข้อมูลที่บันทึกไว้ ({n_ok_saved:,} ตัว · {age_txt})",
             use_container_width=True,
-            help=f"อ่านจาก {_smeta.get('ที่มา')} — ได้ผลทันทีไม่ต้องรอดึงใหม่")
+            help=f"อ่านจาก{_smeta.get('ที่มา (ไทย)', '-')} "
+                 "— ได้ผลทันทีไม่ต้องรอดึงใหม่")
     else:
-        r2.caption("ยังไม่มีข้อมูลที่บันทึกไว้สำหรับขอบเขตนี้ "
-                   "— ดึงครั้งแรกแล้วครั้งต่อไปจะเรียกได้ทันที")
+        r2.caption("ยังไม่มีข้อมูลที่บันทึกไว้สำหรับขอบเขตนี้ · "
+                   "ถ้าดึงบนเว็บไม่สำเร็จ ให้รันบน MacBook แล้ว push ขึ้นมา "
+                   "(`python3 tools_snapshot_build.py --thai`)")
 
     if use_saved:
         st.session_state["quick_df"] = _saved
         st.caption(f"ใช้ข้อมูลที่บันทึกไว้เมื่อ {_smeta.get('บันทึกเมื่อ','-')} "
-                   f"(จาก {_smeta.get('ที่มา')})")
+                   f"· จาก**{_smeta.get('ที่มา (ไทย)','-')}**")
 
     if run_fresh:
         bar, note = st.progress(0.0), st.empty()

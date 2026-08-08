@@ -97,19 +97,23 @@ def build(kind: str, limit: int = 0, market=None, industry=None) -> int:
         print()
         return 1
 
-    r = snapshot.save(key, df, extra={"ขอบเขต": key, "ดึงสำเร็จ": n_ok,
-                                      "แหล่ง": "MacBook"})
+    r = snapshot.save(key, df, to_repo=True,
+                      extra={"ขอบเขต": key, "ดึงสำเร็จ": n_ok, "แหล่ง": "MacBook"})
     print(f"\n  บันทึก    : {r.get('ขนาด (KB)', 0)} KB")
+    print(f"    ในโปรเจกต์   : {'สำเร็จ' if r['repo'] else 'ไม่สำเร็จ'}"
+          "   (data/snapshots/)")
     print(f"    เครื่องนี้    : {'สำเร็จ' if r['local'] else 'ไม่สำเร็จ'}")
-    print(f"    Google Drive : "
-          + ("สำเร็จ" if r["drive"] else
-             "ยังไม่ได้ตั้งค่า (อ่าน 18_เก็บข้อมูลไว้ที่_Google_Drive.md)"))
-
     if r["drive"]:
-        print("\n  เปิดเว็บหรือมือถือ แล้วกดปุ่ม ⚡ ได้เลย — ไม่ต้องรอดึงใหม่")
-    else:
-        print("\n  ตอนนี้ใช้ได้เฉพาะบนเครื่องนี้ "
-              "ถ้าตั้งค่า Google Drive จะใช้บนมือถือได้ด้วย")
+        print("    Google Drive : สำเร็จ")
+
+    if r["repo"]:
+        print("\n  " + "=" * 54)
+        print("  ขั้นต่อไป — ส่งขึ้นเว็บ (คัดลอกไปวางใน Terminal ได้เลย)")
+        print("  " + "=" * 54)
+        print("\n    git add data/snapshots")
+        print(f'    git commit -m "อัปเดตข้อมูลคัดกรอง {key}"')
+        print("    git push")
+        print("\n  รอ 1-2 นาทีให้เว็บโหลดใหม่ แล้วกดปุ่ม ⚡ ได้ทั้งบนเว็บและมือถือ")
     print()
     return 0
 

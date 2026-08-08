@@ -1,14 +1,18 @@
 """
-snapshot.py — เก็บผลคัดกรองไว้ใช้ซ้ำ (จานในเครื่อง + Google Drive)
-====================================================================
+snapshot.py — เก็บผลคัดกรองไว้ใช้ซ้ำ
+======================================
 ปัญหาที่แก้
 -----------
-คัดกรองหุ้นไทยทั้งตลาด 866 ตัว ใช้เวลา 6–10 นาที
-ถ้าปิดหน้าเว็บแล้วเปิดใหม่ ต้องรอใหม่ทั้งหมด
+1. คัดกรองหุ้นไทยทั้งตลาด 866 ตัว ใช้เวลา 6–10 นาที
+   ปิดหน้าเว็บแล้วเปิดใหม่ ต้องรอใหม่ทั้งหมด
 
-ที่แย่กว่านั้น : Streamlit Cloud จะ "หลับ" เมื่อไม่มีคนใช้ราว 30 นาที
-พอตื่นขึ้นมา เครื่องเป็นเครื่องใหม่ — ไฟล์ที่เขียนไว้ในเครื่องหายหมด
-จึงต้องมีที่เก็บนอกเครื่อง และ Google Drive เป็นตัวเลือกที่ฟรีและง่ายที่สุด
+2. Streamlit Cloud "หลับ" เมื่อไม่มีคนใช้ราว 30 นาที
+   พอตื่นขึ้นมา เครื่องเป็นเครื่องใหม่ — ไฟล์ที่เขียนไว้หายหมด
+
+3. Yahoo Finance บล็อกคำขอจากศูนย์ข้อมูล (ซึ่งรวม Streamlit Cloud)
+   ทำให้กดคัดกรองบนเว็บได้ 0 ตัว ทั้งที่รันบน MacBook แล้วได้ครบ
+
+ทางแก้ทั้งสามข้อคือทางเดียวกัน — **ดึงบน Mac แล้วส่งผลไปให้เว็บอ่าน**
 
 เก็บอะไรบ้าง
 ------------
@@ -17,18 +21,22 @@ snapshot.py — เก็บผลคัดกรองไว้ใช้ซ้�
 อัตรากำไร, FCF Yield, ปันผล, มูลค่าตลาด, กลุ่ม)
 
 ขนาดจริง : หุ้นไทย 866 ตัว = ราว 60 KB เมื่อบีบอัดแล้ว
-เทียบกับการเก็บงบการเงินเต็ม ๆ ซึ่งจะเป็นหลักร้อย MB
+ทั้งหมดเป็นข้อมูลสาธารณะของบริษัทจดทะเบียน ไม่มีข้อมูลส่วนตัวของผู้ใช้
 
-ที่เก็บ 2 ชั้น
+ที่เก็บ 3 ชั้น
 --------------
-ชั้นที่ 1  จานในเครื่อง  cache/snapshots/   เร็วที่สุด แต่หายเมื่อเครื่องรีสตาร์ท
-ชั้นที่ 2  Google Drive                     ช้ากว่าเล็กน้อย แต่อยู่ถาวร
+| ชั้น | ที่อยู่ | อยู่รอดเมื่อ Streamlit รีสตาร์ท | ต้องตั้งค่า |
+|------|--------|--------------------------------|-------------|
+| เครื่อง | cache/snapshots/       | ไม่ | ไม่ต้อง |
+| โปรเจกต์ | data/snapshots/      | **ใช่** | ไม่ต้อง (git push) |
+| Drive   | Google Drive          | **ใช่** | ต้องตั้งค่า |
 
-อ่าน : ลองชั้น 1 ก่อน ถ้าไม่มีหรือเก่าเกินไปค่อยลงไปชั้น 2
-เขียน : เขียนทั้ง 2 ชั้น (ถ้าตั้งค่า Drive ไว้)
+ชั้น "โปรเจกต์" คือวิธีหลักที่ใช้อยู่ — ไฟล์เดินทางไปพร้อมโค้ดผ่าน git
+ไม่ต้องมีกุญแจ ไม่ต้องสมัครบริการอะไรเพิ่ม
 
-ถ้าไม่ตั้งค่า Google Drive ระบบยังทำงานได้ปกติ แค่ใช้ชั้นที่ 1 อย่างเดียว
-วิธีตั้งค่าดูได้ที่ไฟล์ 18_เก็บข้อมูลไว้ที่_Google_Drive.md
+การอ่าน : อ่านทุกชั้นแล้ว **เลือกอันที่ใหม่ที่สุด**
+ไม่ใช่ไล่ตามลำดับ เพราะถ้าไล่ตามลำดับแล้วในเครื่องมีของเก่าค้างอยู่
+จะได้ข้อมูลเก่าทั้งที่ในโปรเจกต์มีของใหม่กว่า — ผู้ใช้จะไม่มีทางรู้เลย
 
 วิธีใช้จาก Terminal
 -------------------
@@ -48,7 +56,12 @@ from pathlib import Path
 import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# ที่เก็บชั่วคราวของเครื่องที่รันอยู่ — .gitignore กันไว้ ไม่ขึ้น git
 LOCAL_DIR = BASE_DIR / "cache" / "snapshots"
+
+# ที่เก็บที่เดินทางไปพร้อมโค้ด — อยู่ใน git จริง จึงตามไปถึง Streamlit Cloud ด้วย
+REPO_DIR = BASE_DIR / "data" / "snapshots"
 
 # ชื่อโฟลเดอร์ที่จะสร้างใน Google Drive ถ้าไม่ได้ระบุ folder id ไว้
 DRIVE_FOLDER_NAME = "EquityResearchAI"
@@ -141,7 +154,30 @@ def _local_load(name: str):
 
 
 # ---------------------------------------------------------------------------
-# ชั้นที่ 2 — Google Drive
+# ชั้นที่ 2 — ในโปรเจกต์ (เดินทางไปกับ git)
+# ---------------------------------------------------------------------------
+
+def _repo_save(name: str, blob: bytes) -> bool:
+    try:
+        REPO_DIR.mkdir(parents=True, exist_ok=True)
+        (REPO_DIR / _fname(name)).write_bytes(blob)
+        return True
+    except Exception:
+        return False
+
+
+def _repo_load(name: str):
+    p = REPO_DIR / _fname(name)
+    if not p.exists():
+        return None
+    try:
+        return p.read_bytes()
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# ชั้นที่ 3 — Google Drive (ไม่บังคับ)
 # ---------------------------------------------------------------------------
 
 def _credentials():
@@ -299,14 +335,20 @@ def drive_ready() -> bool:
 # หน้าบ้าน — ใช้แค่ 2 ฟังก์ชันนี้
 # ---------------------------------------------------------------------------
 
-def save(name: str, df: pd.DataFrame, extra: dict = None) -> dict:
+def save(name: str, df: pd.DataFrame, extra: dict = None,
+         to_repo: bool = False) -> dict:
     """
     เก็บตารางตัวเลขไว้ใช้ซ้ำ
 
-    คืน dict บอกว่าเก็บสำเร็จที่ไหนบ้าง เช่น {"local": True, "drive": False}
+    to_repo=True  เขียนลง data/snapshots/ ด้วย เพื่อให้ git พาไปถึงเว็บ
+                  ใช้เมื่อรันบน MacBook เท่านั้น
+                  เว็บไม่ควรเขียนชั้นนี้ เพราะเขียนแล้วก็หายตอนรีสตาร์ท
+                  และเราไม่อยากให้เว็บไปแก้ไฟล์ที่อยู่ในการควบคุมของ git
+
+    คืน dict บอกว่าเก็บสำเร็จที่ไหนบ้าง
     """
     if df is None or df.empty:
-        return {"local": False, "drive": False}
+        return {"local": False, "repo": False, "drive": False}
 
     # จำไว้ว่าคอลัมน์ไหนเป็นข้อความ เพื่อคืนค่าว่างให้ถูกตอนอ่านกลับ (ดู _unpack)
     #
@@ -330,21 +372,33 @@ def save(name: str, df: pd.DataFrame, extra: dict = None) -> dict:
 
     blob = _pack(df, meta)
     out = {"local": _local_save(name, blob),
+           "repo": _repo_save(name, blob) if to_repo else False,
            "drive": _drive_save(name, blob),
            "ขนาด (KB)": round(len(blob) / 1024, 1)}
     return out
 
 
+SOURCE_LABEL = {"local": "เครื่องนี้", "repo": "ในโปรเจกต์", "drive": "Google Drive"}
+
+
 def load(name: str, max_age_hours: float = 24.0):
     """
-    อ่านตารางที่เก็บไว้
+    อ่านตารางที่เก็บไว้ — ดูทุกชั้นแล้วเลือก **อันที่ใหม่ที่สุด**
 
-    คืน (df, meta) — meta มี "อายุ (ชม.)" และ "ที่มา" (local / drive)
-    คืน (None, None) ถ้าไม่มีหรือเก่าเกิน max_age_hours
+    คืน (df, meta) — meta มี "อายุ (ชม.)" และ "ที่มา"
+    คืน (None, None) ถ้าไม่มีเลย หรือของที่ใหม่ที่สุดยังเก่าเกิน max_age_hours
 
-    ลำดับ : จานในเครื่องก่อน (เร็วกว่า) ถ้าไม่ได้ค่อยไป Google Drive
+    ทำไมต้องเลือกอันใหม่สุด ไม่ใช่ไล่ตามลำดับชั้น
+    ------------------------------------------------
+    ถ้าไล่ตามลำดับ (เครื่อง → โปรเจกต์ → Drive) จะเกิดกรณีนี้ :
+      - อาจารย์คัดกรองบน Mac เมื่อวาน  -> เก็บในเครื่อง
+      - วันนี้ push ของใหม่ขึ้น git      -> โปรเจกต์มีของใหม่กว่า
+      - เปิดเว็บบน Mac                  -> เจอของในเครื่องก่อน เลยได้ของเมื่อวาน
+    ผู้ใช้จะไม่มีทางรู้เลยว่ากำลังดูข้อมูลเก่า ซึ่งอันตรายกว่าการช้าไปนิดหน่อย
     """
-    for where, fn in (("local", _local_load), ("drive", _drive_load)):
+    found = []
+    for where, fn in (("local", _local_load), ("repo", _repo_load),
+                      ("drive", _drive_load)):
         raw = fn(name)
         if not raw:
             continue
@@ -352,15 +406,23 @@ def load(name: str, max_age_hours: float = 24.0):
             df, meta = _unpack(raw)
         except Exception:
             continue
-        age = _age_hours(meta.get("บันทึกเมื่อ", ""))
-        if max_age_hours is not None and age > max_age_hours:
-            continue
-        meta["อายุ (ชม.)"] = round(age, 1)
-        meta["ที่มา"] = where
-        if where == "drive":
-            _local_save(name, raw)                  # ดึงมาแล้วเก็บไว้ในเครื่องด้วย
-        return df, meta
-    return None, None
+        found.append((_age_hours(meta.get("บันทึกเมื่อ", "")), where, df, meta, raw))
+
+    if not found:
+        return None, None
+
+    found.sort(key=lambda x: x[0])                  # อายุน้อย = ใหม่ที่สุด
+    age, where, df, meta, raw = found[0]
+    if max_age_hours is not None and age > max_age_hours:
+        return None, None
+
+    meta["อายุ (ชม.)"] = round(age, 1)
+    meta["ที่มา"] = where
+    meta["ที่มา (ไทย)"] = SOURCE_LABEL.get(where, where)
+    meta["พบทั้งหมด"] = [SOURCE_LABEL.get(w, w) for _, w, _, _, _ in found]
+    if where != "local":
+        _local_save(name, raw)                      # ดึงมาแล้วเก็บไว้ในเครื่องด้วย
+    return df, meta
 
 
 def info(name: str):
@@ -385,7 +447,7 @@ def main() -> int:
         if _credentials() is None:
             print("  กุญแจ      : ไม่พบ")
             print("\n  ระบบยังใช้งานได้ตามปกติ แต่จะเก็บไว้ในเครื่องอย่างเดียว")
-            print("  วิธีตั้งค่า : อ่านไฟล์ 18_เก็บข้อมูลไว้ที่_Google_Drive.md\n")
+            print("  วิธีตั้งค่า : อ่านไฟล์ 19_ทางเลือก_Google_Drive.md\n")
             return 1
         print("  กุญแจ      : พบแล้ว")
         svc, folder = _drive()
@@ -403,26 +465,33 @@ def main() -> int:
         print()
         return 0 if r["drive"] else 1
 
-    print(f"\nโฟลเดอร์ในเครื่อง : {LOCAL_DIR}")
-    if not LOCAL_DIR.exists():
-        print("  (ยังไม่มีข้อมูลที่เก็บไว้)\n")
-        return 0
-    files = sorted(LOCAL_DIR.glob("snap_*.csv.gz"))
-    if not files:
-        print("  (ยังไม่มีข้อมูลที่เก็บไว้)\n")
-        return 0
-    print(f"{'ชุดข้อมูล':<24}{'แถว':>8}{'อายุ (ชม.)':>12}{'ขนาด (KB)':>12}")
-    print("-" * 56)
-    for f in files:
-        try:
-            _, meta = _unpack(f.read_bytes())
-            print(f"{meta.get('ชื่อชุดข้อมูล',''):<24}"
-                  f"{meta.get('จำนวนแถว',0):>8,}"
-                  f"{_age_hours(meta.get('บันทึกเมื่อ','')):>12.1f}"
-                  f"{f.stat().st_size/1024:>12.1f}")
-        except Exception as e:
-            print(f"{f.name:<24}  อ่านไม่ได้: {e}")
-    print(f"\nGoogle Drive : {'ตั้งค่าแล้ว' if drive_ready() else 'ยังไม่ได้ตั้งค่า'}\n")
+    any_found = False
+    for label, d in (("ในโปรเจกต์ (ขึ้น git · เว็บอ่านได้)", REPO_DIR),
+                     ("ในเครื่องนี้ (ชั่วคราว)", LOCAL_DIR)):
+        print(f"\n{label}")
+        print(f"  {d}")
+        files = sorted(d.glob("snap_*.csv.gz")) if d.exists() else []
+        if not files:
+            print("  (ว่าง)")
+            continue
+        any_found = True
+        print(f"  {'ชุดข้อมูล':<30}{'แถว':>8}{'อายุ (ชม.)':>12}{'ขนาด (KB)':>12}")
+        print("  " + "-" * 62)
+        for f in files:
+            try:
+                _, meta = _unpack(f.read_bytes())
+                print(f"  {meta.get('ชื่อชุดข้อมูล',''):<30}"
+                      f"{meta.get('จำนวนแถว',0):>8,}"
+                      f"{_age_hours(meta.get('บันทึกเมื่อ','')):>12.1f}"
+                      f"{f.stat().st_size/1024:>12.1f}")
+            except Exception as e:
+                print(f"  {f.name:<30}  อ่านไม่ได้: {e}")
+
+    print(f"\nGoogle Drive : {'ตั้งค่าแล้ว' if drive_ready() else 'ยังไม่ได้ตั้งค่า (ไม่บังคับ)'}")
+    if not any_found:
+        print("\n  ยังไม่มีข้อมูล — สร้างด้วย:")
+        print("    python3 tools_snapshot_build.py --thai")
+    print()
     return 0
 
 

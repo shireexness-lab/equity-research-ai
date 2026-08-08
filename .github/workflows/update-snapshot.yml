@@ -1,0 +1,106 @@
+# อัปเดตข้อมูลคัดกรองอัตโนมัติ — ไม่ต้องเปิด MacBook
+# =====================================================
+# ทำงานบนเครื่องของ GitHub (ฟรีสำหรับ repo แบบ public)
+# ดึงข้อมูล -> บันทึกลง data/snapshots/ -> commit กลับเข้า repo เอง
+# เว็บ Streamlit จะเห็นข้อมูลใหม่โดยอัตโนมัติ
+#
+# ทำไมตั้งเวลา 10:30 UTC : ตรงกับ 17:30 น. เวลาไทย
+# ตลาดหุ้นไทยปิด 16:30 น. จึงได้ราคาปิดของวันนั้นจริง ไม่ใช่ราคาระหว่างวัน
+#
+# ทำไมเฉพาะจันทร์-ศุกร์ : เสาร์อาทิตย์ตลาดปิด ข้อมูลไม่เปลี่ยน
+# รันไปก็เปลืองโควตาเปล่า ๆ
+
+name: อัปเดตข้อมูลคัดกรองรายวัน
+
+on:
+  schedule:
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch:              # กดรันเองได้จากหน้าเว็บ GitHub
+    inputs:
+      scope:
+        description: "ตลาดที่จะดึง"
+        required: true
+        default: thai
+        type: choice
+        options: [thai, us, both]
+
+# ให้สิทธิ์เขียนกลับเข้า repo
+# ใช้กุญแจที่ GitHub สร้างให้อัตโนมัติ (GITHUB_TOKEN)
+# จึงไม่ต้องสร้าง Personal Access Token เก็บไว้เอง — ปลอดภัยกว่ามาก
+permissions:
+  contents: write
+
+# กันไม่ให้รันซ้อนกัน ถ้ารอบก่อนยังไม่เสร็จ
+concurrency:
+  group: update-snapshot
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: ดึงโค้ดล่าสุด
+        uses: actions/checkout@v4
+
+      - name: ติดตั้ง Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ติดตั้งไลบรารีที่ต้องใช้
+        # ติดตั้งเฉพาะที่จำเป็นต่อการดึงข้อมูล
+        # ไม่ลง streamlit / weasyprint เพราะไม่ได้ใช้ในขั้นนี้ และลงช้ามาก
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy certifi
+
+      - name: ดึงข้อมูลหุ้นไทย
+        if: ${{ github.event.inputs.scope != 'us' }}
+        run: python tools_snapshot_build.py --thai
+        continue-on-error: true
+
+      - name: ดึงข้อมูลหุ้นสหรัฐ
+        if: ${{ github.event.inputs.scope == 'us' || github.event.inputs.scope == 'both' }}
+        run: python tools_snapshot_build.py --us
+        continue-on-error: true
+
+      - name: ตรวจว่ามีข้อมูลใหม่จริงไหม
+        id: check
+        run: |
+          if [ -n "$(git status --porcelain data/snapshots)" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "มีข้อมูลใหม่:"
+            git status --short data/snapshots
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ไม่มีข้อมูลใหม่ — อาจดึงไม่สำเร็จ หรือข้อมูลเหมือนเดิม"
+          fi
+
+      - name: บันทึกกลับเข้า repo
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/snapshots
+          git commit -m "อัปเดตข้อมูลคัดกรองอัตโนมัติ $(TZ=Asia/Bangkok date '+%Y-%m-%d %H:%M น.')"
+          git push
+
+      - name: สรุปผล
+        if: always()
+        run: |
+          echo "### ผลการอัปเดต" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.changed }}" = "true" ]; then
+            echo "อัปเดตสำเร็จ — เปิดเว็บแล้วกดปุ่ม ⚡ ได้เลย" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**ไม่ได้อัปเดต**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "สาเหตุที่พบบ่อยที่สุดคือ Yahoo บล็อกเครื่องของ GitHub" >> $GITHUB_STEP_SUMMARY
+            echo "ดูข้อความจริงได้ที่ขั้นตอน 'ดึงข้อมูลหุ้นไทย' ด้านบน" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ถ้าโดนบล็อกจริง ให้กลับไปรันบน MacBook แทน:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "python3 tools_snapshot_build.py --thai" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
