@@ -464,7 +464,11 @@ if MODE.startswith("คัดกรอง"):
         "f_pe": 0.0, "f_pbv": 0.0, "f_ev": 0.0, "f_roe": 0.0, "f_fcf": 0.0,
         "f_div": 0.0, "f_de": 0.0, "f_gm": 0.0, "f_nm": 0.0, "f_cap": 0.0,
         # ส่วนของมูลค่าพื้นฐาน — ค่าตั้งต้นไม่ใช่ 0 จึงต้องเก็บค่าจริงไว้
-        "t_pe": 15.0, "t_fcy": 6.0, "t_min": 0.0,
+        #
+        # t_min ต้องเป็น -100 (ไม่กรอง) ไม่ใช่ 0
+        # ถ้าตั้งเป็น 0 จะกลายเป็นตัวกรอง "เอาเฉพาะตัวที่ราคาต่ำกว่ามูลค่า"
+        # ที่ทำงานอยู่ตลอดโดยผู้ใช้ไม่ได้สั่ง — หุ้นหายไปเป็นร้อยตัวโดยไม่รู้สาเหตุ
+        "t_pe": 15.0, "t_fcy": 6.0, "t_min": -100.0,
     }
 
     def _reset_filters():
@@ -490,8 +494,14 @@ if MODE.startswith("คัดกรอง"):
                                      "· เทียบกับพันธบัตรไทย 10 ปี ~2.5%")
         t_min = v3.number_input("ส่วนต่างขั้นต่ำ (%)", -100.0, 90.0, step=5.0,
                                 key="t_min",
-                                help="0 = เอาเฉพาะตัวที่ราคาต่ำกว่ามูลค่า "
-                                     "· ใส่ -100 = ไม่กรองด้วยเงื่อนไขนี้")
+                                help="**−100 = ไม่กรอง** (ค่าตั้งต้น)  \n"
+                                     "0 = เอาเฉพาะตัวที่ราคาต่ำกว่ามูลค่า  \n"
+                                     "20 = เอาเฉพาะตัวที่ถูกกว่ามูลค่าอย่างน้อย 20%\n\n"
+                                     "หุ้นที่คำนวณมูลค่าพื้นฐานไม่ได้ (ขาดทุน/ทุนติดลบ) "
+                                     "จะถูกคัดออกด้วยเมื่อเปิดเกณฑ์นี้")
+        if t_min > -100:
+            st.info(f"เกณฑ์นี้ทำงานอยู่ — จะเหลือเฉพาะหุ้นที่ราคาต่ำกว่ามูลค่า"
+                    f"พื้นฐานอย่างน้อย **{t_min:.0f}%**")
         st.warning(
             "**นี่ไม่ใช่การประเมินมูลค่า** — ทั้งสามวิธีใช้ตัวเลข 12 เดือนล่าสุด"
             "จุดเดียว ไม่ดูแนวโน้มย้อนหลัง ไม่คิดการเติบโต และไม่คิดหนี้สิน  \n"
@@ -638,10 +648,22 @@ if MODE.startswith("คัดกรอง"):
                            max_ev_ebitda=f_ev or None)
 
         # ประเมินมูลค่าพื้นฐานหลังกรอง — คำนวณเฉพาะตัวที่ผ่านเกณฑ์ จึงเร็ว
+        n_after_filter = len(res)
         res = quick_fair_value(res, target_pe=t_pe, target_fcf_yield=t_fcy)
+        n_cut_by_value = 0
         if t_min > -100:
             keep = pd.to_numeric(res["ส่วนต่างจากมูลค่า (%)"], errors="coerce") >= t_min
+            n_cut_by_value = int((~keep).sum())
             res = res[keep].reset_index(drop=True)
+
+        # ---- บัญชีว่าหุ้นหายไปที่ขั้นตอนไหนบ้าง ----
+        # ผู้ใช้ต้องตรวจสอบได้ว่า 866 -> N เกิดจากอะไร ไม่ใช่หายไปเฉย ๆ
+        FLOW = [("ทั้งหมดในทะเบียน", len(qdf)),
+                ("ดึงข้อมูลสำเร็จ", len(got)),
+                ("หลังจัดการหุ้นที่มีจุดต้องระวัง", len(base)),
+                ("หลังเกณฑ์คัดกรอง", n_after_filter)]
+        if t_min > -100:
+            FLOW.append((f"หลังเกณฑ์ส่วนต่าง ≥ {t_min:.0f}%", len(res)))
 
         # ---------- จัดเรียงตามหัวข้อที่เลือก ----------
         # ค่าเริ่มต้นของแต่ละหัวข้อตั้งให้ "ตัวที่น่าสนใจอยู่บน" โดยอัตโนมัติ
@@ -705,7 +727,8 @@ if MODE.startswith("คัดกรอง"):
                     f"{n_flag:,} ตัว" if quality else "ไม่ได้ตรวจ",
                     "ซ่อนไว้" if qmode.startswith("🛡️") else
                     ("ติดธงไว้" if quality else None))
-        metric_card(k[2], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
+        metric_card(k[2], "ผ่านเกณฑ์", f"{len(res):,} ตัว",
+                    f"จาก {len(base):,} ตัวที่นำมาคัด")
         # ใช้ "ค่ากลาง" ไม่ใช่ "ต่ำสุด" — ค่าต่ำสุดมักเป็นข้อมูลเสียเพียงตัวเดียว
         pe_pos = pd.to_numeric(res.get("P/E"), errors="coerce")
         pe_pos = pe_pos[pe_pos > 0] if pe_pos is not None else pd.Series(dtype=float)
@@ -731,15 +754,29 @@ if MODE.startswith("คัดกรอง"):
                     "จากนั้นกดปุ่ม ⚡ บนเว็บหรือมือถือได้ทันที\n\n"
                     "```\neq\npython3 tools_snapshot_build.py --thai\n```")
 
+        with st.expander(f"🔎 หุ้นหายไปที่ขั้นตอนไหน — {len(qdf):,} เหลือ {len(res):,}"):
+            prev = None
+            for label, n in FLOW:
+                drop = "" if prev is None else f"  (หายไป {prev - n:,} ตัว)"
+                st.markdown(f"- **{label}** : {n:,} ตัว{drop}")
+                prev = n
+            if n_cut_by_value:
+                st.caption(
+                    f"เกณฑ์ *ส่วนต่างขั้นต่ำ* คัดออก {n_cut_by_value:,} ตัว — "
+                    "รวมถึงตัวที่คำนวณมูลค่าพื้นฐานไม่ได้ (ขาดทุนหรือส่วนทุนติดลบ) "
+                    "· ตั้งเป็น **−100** ในกล่อง 💰 ด้านบนเพื่อปิดเกณฑ์นี้")
+
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
         else:
             # ธงเตือนไว้ท้ายตาราง — ตัวเลขที่ใช้ตัดสินใจควรอยู่ใกล้ชื่อหุ้นมากกว่า
-            cols = ["ticker", "ชื่อบริษัท", "ราคา", "มูลค่าพื้นฐาน (เร็ว)",
+            # ชื่อบริษัทเต็มไว้ท้ายตาราง — เป็นคอลัมน์ที่กว้างที่สุดและอ่านทีหลังก็ได้
+            # ถ้าอยู่ต้นตารางจะดันตัวเลขที่ใช้ตัดสินใจให้ห่างจาก ticker
+            cols = ["ticker", "ราคา", "มูลค่าพื้นฐาน (เร็ว)",
                     "ส่วนต่างจากมูลค่า (%)", "P/E", "P/BV", "P/S",
                     "EV/EBITDA", "D/E", "ROE (%)", "อัตรากำไรขั้นต้น (%)",
                     "อัตรากำไรสุทธิ (%)", "FCF Yield (%)", "ปันผล (%)",
-                    "มูลค่าตลาด (ล้าน)", "วิธีที่ใช้", "กลุ่ม", "⚠️"]
+                    "มูลค่าตลาด (ล้าน)", "วิธีที่ใช้", "กลุ่ม", "⚠️", "ชื่อบริษัท"]
 
             # ถ้าตารางมีข้อมูลจากหลายวันปนกัน ต้องบอกให้เห็นว่าแถวไหนเป็นของวันไหน
             # ไม่อย่างนั้นผู้ใช้จะเข้าใจว่าราคาทุกแถวเป็นของวันนี้ ซึ่งไม่จริง
@@ -774,7 +811,8 @@ if MODE.startswith("คัดกรอง"):
             mask = pd.Series((nmeth >= 2).values, index=show.index)
             html_table(show, first_col="อันดับ", trim_year=False,
                        max_height=640, link_cols=("ticker",),
-                       sign_cols=("ส่วนต่างจากมูลค่า (%)",), sign_mask=mask)
+                       sign_cols=("ส่วนต่างจากมูลค่า (%)",), sign_mask=mask,
+                       left_cols=("ชื่อบริษัท", "กลุ่ม", "วิธีที่ใช้", "⚠️"))
             d_ser = pd.to_numeric(show.get("ส่วนต่างจากมูลค่า (%)"), errors="coerce")
             n_green = int((d_ser.gt(0) & mask).sum())
             n_weak = int((d_ser.gt(0) & ~mask).sum())
@@ -871,9 +909,9 @@ if MODE.startswith("คัดกรอง"):
             b2.button("ล้างที่เลือก", use_container_width=True,
                       on_click=_check_all, args=(all_tk, False))
 
-            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "มูลค่าพื้นฐาน", "ส่วนต่าง %",
-                     "P/E", "P/BV", "D/E", "ROE %", "GM %", "NM %"]
-            WIDTHS = [0.5, 1.2, 2.4, 1.1, 1.0, 0.8, 0.8, 0.8, 0.9, 0.9, 0.9]
+            HEADS = ["เลือก", "หุ้น", "มูลค่าพื้นฐาน", "ส่วนต่าง %",
+                     "P/E", "P/BV", "D/E", "ROE %", "GM %", "NM %", "ชื่อบริษัท"]
+            WIDTHS = [0.5, 1.2, 1.1, 1.0, 0.8, 0.8, 0.8, 0.9, 0.9, 0.9, 2.4]
             hd = st.columns(WIDTHS)
             for col, txt in zip(hd, HEADS):
                 col.markdown(f"<span class='muted'><b>{txt}</b></span>",
@@ -892,20 +930,20 @@ if MODE.startswith("คัดกรอง"):
                     picked.add(t)
                 cc[1].markdown(f"<a class='tk' target='_blank' rel='noopener' "
                                f"href='?t={t}'>{t}</a>", unsafe_allow_html=True)
-                cc[2].caption(str(r["ชื่อบริษัท"])[:32])
-                cc[3].caption(_cell(r.get("มูลค่าพื้นฐาน (เร็ว)"), 2))
+                cc[2].caption(_cell(r.get("มูลค่าพื้นฐาน (เร็ว)"), 2))
                 d = pd.to_numeric(r.get("ส่วนต่างจากมูลค่า (%)"), errors="coerce")
-                cc[4].markdown(
+                cc[3].markdown(
                     f"<span style='color:#2e9e5b;font-weight:600'>▲ {d:,.1f}</span>"
                     if pd.notna(d) and d > 0 else
                     f"<span class='muted'>{_cell(d, 1)}</span>",
                     unsafe_allow_html=True)
-                cc[5].caption(_cell(r.get("P/E"), 1))
-                cc[6].caption(_cell(r.get("P/BV"), 2))
-                cc[7].caption(_cell(r.get("D/E"), 2))
-                cc[8].caption(_cell(r.get("ROE (%)"), 1))
-                cc[9].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
-                cc[10].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
+                cc[4].caption(_cell(r.get("P/E"), 1))
+                cc[5].caption(_cell(r.get("P/BV"), 2))
+                cc[6].caption(_cell(r.get("D/E"), 2))
+                cc[7].caption(_cell(r.get("ROE (%)"), 1))
+                cc[8].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
+                cc[9].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
+                cc[10].caption(str(r["ชื่อบริษัท"])[:36])
 
             st.session_state["picked"] = picked
             sel = [t for t in all_tk if t in picked]
