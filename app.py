@@ -304,14 +304,33 @@ if MODE.startswith("คัดกรอง"):
                    "แล้วดึงราคาทีละ 180 ตัว\n\n"
                    "⏱️ ทั้งตลาด ~10,000 บริษัท ใช้เวลาราว **3–6 นาที**")
         universe, key, bulk = None, "us-all", True
-    else:
-        bulk = False
-        key = "thai" if uni.startswith("🇹🇭") else "us"
-        full = preset(key)
-        cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, len(full), 0, 25)
-        universe = full[:cap] if cap else full
+    elif uni.startswith("🇹🇭"):
+        bulk, key = False, "thai"
+        from tickers import load_set, thai_industries, thai_universe
+        meta = load_set()["meta"]
+        st.caption(f"ทะเบียนบริษัทจดทะเบียน · {meta.get('ที่มา','-')} "
+                   f"· ข้อมูล ณ {meta.get('ข้อมูล ณ','-')} · {meta.get('จำนวน',0):,} รายการ")
+        t1, t2, t3 = st.columns([1, 2, 1])
+        with t1:
+            mkt = st.radio("ตลาด", ["ทั้งหมด", "SET", "mai"], horizontal=True)
+        with t2:
+            ind = st.selectbox("กลุ่มอุตสาหกรรม", ["ทุกกลุ่ม"] + thai_industries())
+        universe = thai_universe(market=None if mkt == "ทั้งหมด" else mkt,
+                                 industry=None if ind == "ทุกกลุ่ม" else ind)
+        with t3:
+            cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, max(len(universe), 1),
+                                  0, 25)
+        universe = universe[:cap] if cap else universe
         mins = len(universe) * 1.5 / 8 / 60
-        st.caption(f"จะคัดกรอง {len(universe):,} ตัว — คาดว่าราว {mins:.1f} นาที")
+        st.caption(f"จะคัดกรอง **{len(universe):,} ตัว** — คาดว่าราว {mins:.1f} นาที "
+                   "· นับเฉพาะหุ้นสามัญ (ตัดกองทุนรวมและ REIT ออก "
+                   "เพราะไม่มีงบแบบบริษัท จึงคิด P/E, ROE ไม่ได้)")
+    else:
+        bulk, key = False, "us"
+        full = preset(key)
+        cap = st.number_input("จำกัดจำนวน (0 = ไม่จำกัด)", 0, len(full), 0, 5)
+        universe = full[:cap] if cap else full
+        st.caption(f"จะคัดกรอง {len(universe):,} ตัว")
 
     st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
     g = st.columns(7)

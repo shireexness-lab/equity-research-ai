@@ -136,9 +136,69 @@ def us_tickers() -> dict:
         return dict(POPULAR_US)
 
 
-def thai_universe():
-    """หุ้นไทยทั้งหมดที่รู้จัก (เติม .BK ให้แล้ว)"""
-    return [f"{s}.BK" for s in THAI_STOCKS]
+# ---------------------------------------------------------------------------
+# ทะเบียนบริษัทจดทะเบียนฉบับเต็มจากตลาดหลักทรัพย์ (930 รายการ)
+#
+# ที่มา : ดาวน์โหลดจากเว็บ SET → รายชื่อบริษัทจดทะเบียน → บันทึกเป็นไฟล์
+#         แล้วแปลงเป็น data/set_listed.json
+# วิธีอัปเดต : ดาวน์โหลดไฟล์ใหม่จาก SET แล้วรัน  python3 tools_update_set.py
+# ---------------------------------------------------------------------------
+
+SET_FILE = BASE_DIR / "data" / "set_listed.json"
+_set_cache = {}
+
+
+def load_set() -> dict:
+    """
+    อ่านทะเบียนบริษัทจดทะเบียนไทยฉบับเต็ม
+
+    ถ้าไม่มีไฟล์ จะถอยไปใช้รายชื่อตั้งต้นที่ฝังไว้ในโค้ด (135 ตัว)
+    เพื่อให้ระบบยังทำงานได้ ไม่พังเพราะไฟล์หาย
+    """
+    if _set_cache:
+        return _set_cache
+    try:
+        import json
+        with open(SET_FILE, encoding="utf-8") as f:
+            js = json.load(f)
+        _set_cache.update({"meta": js.get("meta", {}),
+                           "companies": js.get("companies", [])})
+    except Exception:
+        _set_cache.update({
+            "meta": {"ที่มา": "รายชื่อตั้งต้นในโค้ด (ไม่พบไฟล์ทะเบียนเต็ม)"},
+            "companies": [{"sym": s, "name": n, "market": "SET",
+                           "industry": "-", "sector": "-", "kind": "หุ้นสามัญ"}
+                          for s, n in THAI_STOCKS.items()]})
+    return _set_cache
+
+
+def thai_industries():
+    """รายชื่อกลุ่มอุตสาหกรรมทั้งหมด ใช้ทำตัวกรอง"""
+    return sorted({c["industry"] for c in load_set()["companies"]
+                   if c.get("industry") and c["industry"] != "-"})
+
+
+def thai_universe(market=None, industry=None, common_only=True):
+    """
+    หุ้นไทยทั้งตลาด (เติม .BK ให้แล้ว)
+
+        market      "SET" หรือ "mai" — ไม่ใส่ = ทั้งสองตลาด
+        industry    กรองเฉพาะกลุ่มอุตสาหกรรมที่ระบุ
+        common_only True = เอาเฉพาะหุ้นสามัญ ตัดกองทุนรวม/REIT ออก
+
+    ทำไมต้องตัดกองทุน/REIT ออก : กองทุนไม่มีงบการเงินแบบบริษัท
+    การคำนวณ P/E, ROE, DCF จึงไม่มีความหมาย
+    """
+    out = []
+    for c in load_set()["companies"]:
+        if common_only and c.get("kind") != "หุ้นสามัญ":
+            continue
+        if market and c.get("market") != market:
+            continue
+        if industry and c.get("industry") != industry:
+            continue
+        out.append(f"{c['sym']}.BK")
+    return out
 
 
 def us_universe(limit=None):
@@ -163,17 +223,23 @@ def build_options(include_us=True):
     คืน (รายการข้อความ, dict แปลงข้อความกลับเป็น ticker)
     """
     labels, lookup = [], {}
+    seen = set()
 
     def add(sym, name, tag):
+        if sym in seen:
+            return
+        seen.add(sym)
         label = f"{sym} — {name}" if name else sym
         if tag:
             label = f"{label}  ·{tag}"
-        if sym not in lookup.values():
-            labels.append(label)
-            lookup[label] = sym
+        labels.append(label)
+        lookup[label] = sym
 
-    for sym, name in THAI_STOCKS.items():
-        add(f"{sym}.BK", name, "ไทย")
+    # หุ้นไทยจากทะเบียนฉบับเต็ม (เอาเฉพาะหุ้นสามัญ)
+    for c in load_set()["companies"]:
+        if c.get("kind") != "หุ้นสามัญ":
+            continue
+        add(f"{c['sym']}.BK", c["name"], c.get("market", "ไทย"))
 
     if include_us:
         us = us_tickers()

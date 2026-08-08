@@ -337,7 +337,9 @@ def preset(name: str, limit=None):
     """
     ชุดหุ้นตั้งต้น
 
-        thai       หุ้นไทยที่รู้จักทั้งหมด
+        thai       หุ้นไทยทั้งตลาด (SET + mai, เฉพาะหุ้นสามัญ)
+        set        เฉพาะตลาด SET
+        mai        เฉพาะตลาด mai
         us         หุ้นสหรัฐยอดนิยม 39 ตัว
         us-all     หุ้นสหรัฐทั้งตลาดจากทะเบียน SEC (~10,000 ตัว)
         all        ไทย + สหรัฐทั้งตลาด
@@ -345,6 +347,10 @@ def preset(name: str, limit=None):
     from tickers import POPULAR_US, thai_universe, us_universe
     if name == "thai":
         out = thai_universe()
+    elif name == "set":
+        out = thai_universe(market="SET")
+    elif name == "mai":
+        out = thai_universe(market="mai")
     elif name == "us":
         out = list(POPULAR_US)
     elif name == "us-all":
@@ -352,7 +358,7 @@ def preset(name: str, limit=None):
     elif name == "all":
         out = thai_universe() + us_universe()
     else:
-        raise ValueError("ชุดหุ้นมีให้เลือก : thai / us / us-all / all")
+        raise ValueError("ชุดหุ้นมีให้เลือก : thai / set / mai / us / us-all / all")
     return out[:limit] if limit else out
 
 
@@ -422,7 +428,7 @@ def main() -> int:
     python3 screener.py --compare AAPL MSFT GOOGL NVDA
 """)
     p.add_argument("tickers", nargs="*", help="ชื่อย่อหุ้น เว้นวรรคคั่น")
-    p.add_argument("--list", choices=["thai", "us", "us-all", "all"],
+    p.add_argument("--list", choices=["thai", "set", "mai", "us", "us-all", "all"],
                    help="ใช้ชุดหุ้นสำเร็จรูป")
     p.add_argument("--quick", action="store_true",
                    help="ใช้ชั้นคัดกรองเร็ว (รองรับทั้งตลาด ไม่ทำ DCF)")
