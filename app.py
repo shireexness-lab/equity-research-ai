@@ -465,6 +465,12 @@ if MODE.startswith("🏆"):
     def _deep(mkt):
         return DS.load_results(mkt)
 
+    rf1, rf2 = st.columns([1, 4])
+    if rf1.button("🔄 โหลดข้อมูลใหม่", use_container_width=True,
+                  help="อ่านไฟล์ผลวิเคราะห์ใหม่ทันที ไม่รอแคช 5 นาที"):
+        _deep.clear()
+        st.rerun()
+
     ddf, dmeta = _deep(market)
 
     if ddf is None or ddf.empty:
@@ -481,9 +487,27 @@ if MODE.startswith("🏆"):
     else:
         ok = ddf[ddf["ปัญหา"].eq("")] if "ปัญหา" in ddf.columns else ddf
         age = dmeta.get("อายุ (ชม.)", 0)
-        st.caption(f"วิเคราะห์ไว้ **{len(ddf):,} ตัว** · สำเร็จ {len(ok):,} ตัว "
-                   f"· ข้อมูลอายุ {age:.0f} ชม. · "
-                   f"จาก{dmeta.get('ที่มา (ไทย)','-')}")
+        src_th = dmeta.get("ที่มา (ไทย)", "-")
+        rf2.caption(
+            f"ในไฟล์มี **{len(ddf):,} ตัว** · วิเคราะห์สำเร็จ {len(ok):,} ตัว "
+            f"· บันทึกเมื่อ {dmeta.get('บันทึกเมื่อ','-')[:16]} "
+            f"({age:.0f} ชม.ที่แล้ว) · อ่านจาก **{src_th}**")
+
+        # ---- เตือนเมื่อจำนวนไม่ตรงกับที่คาด ----
+        # กรณีที่เกิดจริงบ่อยที่สุด : รันบน MacBook แล้วยังไม่ได้ push
+        # เว็บบน Streamlit Cloud จึงยังเห็นไฟล์เก่าที่ push ไว้รอบก่อน
+        expect = {"thai": 866, "us": 39}.get(market)
+        if expect and len(ddf) < expect * 0.5:
+            st.warning(
+                f"**ไฟล์นี้มีแค่ {len(ddf):,} ตัว แต่ตลาด{market}มี {expect:,} ตัว**  \n"
+                f"อ่านจาก *{src_th}* บันทึกเมื่อ "
+                f"{dmeta.get('บันทึกเมื่อ','-')[:16]}\n\n"
+                "**สาเหตุที่พบบ่อยที่สุด** — รันวิเคราะห์บน MacBook แล้ว "
+                "**ยังไม่ได้ push ขึ้น GitHub** เว็บจึงยังเห็นไฟล์เก่ารอบก่อน  \n"
+                "แก้โดยรันบน MacBook :\n\n"
+                "```\neq\ngit add data/snapshots\n"
+                "git commit -m 'ผลวิเคราะห์ลึกล่าสุด'\ngit push\n```\n"
+                "รอ 1–2 นาทีให้เว็บโหลดใหม่ แล้วกด **🔄 โหลดข้อมูลใหม่**")
 
         # ---- ตรวจสุขภาพผลลัพธ์ก่อนแสดง ----
         dg = DS.diagnose(ddf)
@@ -551,6 +575,13 @@ if MODE.startswith("🏆"):
                          "Buffett", "คุณภาพ", "ความเสี่ยง", "กลุ่ม",
                          "ชื่อบริษัท"] if c in sel.columns]].copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
+            st.caption(
+                f"**แสดง {len(show):,} ตัว** จาก {len(ok):,} ตัวที่วิเคราะห์สำเร็จ "
+                f"· กรองด้วย : คำแนะนำ {', '.join(pick_lv)}"
+                + (f" · ความน่าเชื่อถือ ≥ {min_rel}" if min_rel else "")
+                + (f" · ข้อมูล ≥ {min_yr} ปี" if min_yr else "")
+                + "  \nถ้าตัวเลขนี้น้อยกว่าที่คาด ให้ดูว่าไฟล์ผลมีกี่ตัว "
+                  "(บรรทัดบนสุด) และเลือกคำแนะนำครบทุกระดับหรือยัง")
             html_table(show, first_col="อันดับ", trim_year=False, fit=True,
                        max_height=620, sign_cols=("ส่วนลด (%)",),
                        left_cols=("คำแนะนำ", "โซน", "ความน่าเชื่อถือ",

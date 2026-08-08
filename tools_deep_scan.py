@@ -252,7 +252,9 @@ def main() -> int:
     p.add_argument("--rf", type=float, default=None, help="อัตราพันธบัตร")
     p.add_argument("--show", action="store_true", help="ดูผลที่ทำไว้แล้ว")
     p.add_argument("--reset", action="store_true",
-                   help="ลบผลเก่าแล้วเริ่มใหม่ทั้งหมด")
+                   help="เริ่มนับหนึ่งใหม่ (ย้ายผลเก่าไปเป็นไฟล์สำรอง "
+                        "ไม่ได้ลบทิ้ง และต้องพิมพ์ยืนยันก่อน) — "
+                        "ปกติไม่ต้องใช้ เพราะระบบทำต่อจากเดิมให้อยู่แล้ว")
     a = p.parse_args()
 
     market = "us" if a.us else "thai"
@@ -295,14 +297,44 @@ def main() -> int:
     print(f"{'='*72}")
 
     if a.reset:
+        # -------------------------------------------------------------------
+        # --reset เคยลบไฟล์ทิ้งจริง ๆ ทั้งสำเนาในเครื่องและสำเนาในโปรเจกต์
+        # ผลคือผลวิเคราะห์ที่ใช้เวลารันหลายชั่วโมงหายไปทั้งหมดในพริบตา
+        #
+        # ตอนนี้เปลี่ยนเป็น "ย้ายไปเก็บเป็นไฟล์สำรอง" ไม่ลบทิ้ง
+        # และต้องพิมพ์ยืนยันก่อน เพราะการสั่งผิดมีต้นทุนสูงมาก
+        # -------------------------------------------------------------------
         key = DEEP_KEY.format(market=market)
-        removed = 0
-        for d in (snapshot.LOCAL_DIR, snapshot.REPO_DIR):
-            f = d / snapshot._fname(key)
-            if f.exists():
-                f.unlink()
-                removed += 1
-        print(f"  ลบผลเก่าแล้ว {removed} ไฟล์ — จะเริ่มนับหนึ่งใหม่\n")
+        targets = [d / snapshot._fname(key)
+                   for d in (snapshot.LOCAL_DIR, snapshot.REPO_DIR)]
+        found = [f for f in targets if f.exists()]
+
+        if not found:
+            print("  ไม่มีผลเก่าอยู่แล้ว — เริ่มนับหนึ่งได้เลย\n")
+        else:
+            n_rows = 0
+            try:
+                df_old, _ = load_results(market)
+                n_rows = 0 if df_old is None else len(df_old)
+            except Exception:
+                pass
+
+            print(f"\n  ⚠️  กำลังจะล้างผลวิเคราะห์เดิมของตลาด {market}")
+            print(f"     มีอยู่ {n_rows:,} ตัว · {len(found)} ไฟล์")
+            print("     การรันใหม่ทั้งตลาดใช้เวลาหลายชั่วโมง")
+            print("     ถ้าไม่ล้าง ระบบจะ 'ทำต่อจากเดิม' ให้อยู่แล้ว "
+                  "(ไม่ต้องใช้ --reset)")
+            ans = input("\n     พิมพ์  ล้าง  แล้วกด Enter เพื่อยืนยัน : ").strip()
+            if ans not in ("ล้าง", "reset", "yes"):
+                print("  ยกเลิก — ไม่มีอะไรถูกลบ ระบบจะทำต่อจากผลเดิม\n")
+            else:
+                stamp = datetime.now().strftime("%Y%m%d-%H%M")
+                for f in found:
+                    bak = f.with_name(f"{f.stem}.สำรอง-{stamp}{f.suffix}")
+                    f.rename(bak)
+                    print(f"     ย้ายไปเก็บที่ {bak}")
+                print("  ล้างแล้ว (ไฟล์เดิมยังอยู่ในชื่อ .สำรอง- "
+                      "ถ้าต้องการคืนให้เปลี่ยนชื่อกลับ)\n")
 
     if not a.all:
         # คัดก่อนด้วยข้อมูลชั้นคัดกรอง เพื่อลดเวลา
