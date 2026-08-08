@@ -680,14 +680,31 @@ def compare(tickers, rf=None, mos=None, refresh=False, progress=None):
                          "และใช้เวลานานเกินไป")
 
     raw = scan(tickers, rf=rf, mos=mos, refresh=refresh, progress=progress)
+    return build_compare(raw, order=tickers)
+
+
+def build_compare(raw: pd.DataFrame, order=None) -> dict:
+    """
+    ประกอบตารางเปรียบเทียบจากผล scan() ที่มีอยู่แล้ว — **ไม่ดึงข้อมูลใหม่**
+
+    แยกออกมาเป็นฟังก์ชันต่างหาก เพื่อให้โหมด "วิเคราะห์ลึกหลายตัว"
+    เอาผลที่วิเคราะห์เสร็จแล้วมาทำตารางเปรียบเทียบต่อได้ทันที
+    ไม่ต้องเสียเวลาวิเคราะห์ซ้ำอีกรอบ (ซึ่งกินเวลา 30 วินาทีต่อหุ้น)
+    """
+    if raw is None or raw.empty:
+        return {"table": pd.DataFrame(), "sections": {}, "full": pd.DataFrame(),
+                "raw": raw, "errors": [], "winner": None}
+
     ok = raw[raw["ปัญหา"].eq("")]
     errors = [(r["ticker"], r["ปัญหา"]) for _, r in raw[~raw["ปัญหา"].eq("")].iterrows()]
 
     if ok.empty:
-        return {"table": pd.DataFrame(), "raw": raw, "errors": errors}
+        return {"table": pd.DataFrame(), "sections": {}, "full": pd.DataFrame(),
+                "raw": raw, "errors": errors, "winner": None}
 
     ok = ok.set_index("ticker")
-    ok = ok.reindex([t for t in tickers if t in ok.index])   # คงลำดับที่ผู้ใช้เลือก
+    if order:                                    # คงลำดับที่ผู้ใช้เลือก
+        ok = ok.reindex([t for t in order if t in ok.index])
 
     def _fmt(t, col, dec):
         v = ok.loc[t, col]

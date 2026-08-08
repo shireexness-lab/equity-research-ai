@@ -820,50 +820,68 @@ if MODE.startswith("คัดกรอง"):
             st.caption("ชั้นคัดกรองบอกได้แค่ว่า 'ตัวเลขสรุปดูน่าสนใจ' "
                        "ยังไม่ได้ประเมินมูลค่า — เลือกตัวที่สนใจส่งไปวิเคราะห์เต็มรูปแบบ")
 
-            picked = st.session_state.setdefault("picked", set())
-            PER_PAGE = 25
-            n_pages = max(1, (len(res) + PER_PAGE - 1) // PER_PAGE)
-            pg = st.number_input(f"หน้า (ทั้งหมด {n_pages} หน้า · {len(res):,} ตัว)",
-                                 1, n_pages, 1, 1)
-            page = res.iloc[(pg - 1) * PER_PAGE: pg * PER_PAGE]
+            all_tk = list(res["ticker"])
 
-            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "P/E", "P/BV", "D/E",
-                     "ROE %", "GM %", "NM %"]
-            WIDTHS = [0.6, 1.4, 2.6, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0]
+            # ---- ปุ่มเลือก/ล้าง ----
+            # ต้องเขียนลง st.session_state["cb_<ticker>"] โดยตรง
+            #
+            # เหตุผล : เมื่อ checkbox มี key แล้ว Streamlit จะยึดค่าใน session_state
+            # เป็นความจริง และ **ไม่สนใจ** พารามิเตอร์ value= อีกเลยหลังเรนเดอร์ครั้งแรก
+            # โค้ดเดิมไปเติมชื่อหุ้นลงชุด picked เฉย ๆ ช่องติ๊กจึงไม่เปลี่ยนตาม
+            # แล้วรอบถัดมาก็ถูกลบออกทันทีเพราะอ่านค่าช่องได้เป็น False
+            def _check_all(tks, on=True):
+                for x in tks:
+                    st.session_state[f"cb_{x}"] = on
+
+            b1, b2 = st.columns(2)
+            b1.button(f"เลือกทั้งหมด ({len(all_tk)})", use_container_width=True,
+                      on_click=_check_all, args=(all_tk, True))
+            b2.button("ล้างที่เลือก", use_container_width=True,
+                      on_click=_check_all, args=(all_tk, False))
+
+            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "มูลค่าพื้นฐาน", "ส่วนต่าง %",
+                     "P/E", "P/BV", "D/E", "ROE %", "GM %", "NM %"]
+            WIDTHS = [0.5, 1.2, 2.4, 1.1, 1.0, 0.8, 0.8, 0.8, 0.9, 0.9, 0.9]
             hd = st.columns(WIDTHS)
             for col, txt in zip(hd, HEADS):
                 col.markdown(f"<span class='muted'><b>{txt}</b></span>",
                              unsafe_allow_html=True)
 
-            for _, r in page.iterrows():
+            # แสดงทุกตัวที่ผ่านเกณฑ์ ไม่แบ่งหน้า
+            picked = set()
+            for _, r in res.iterrows():
                 t = r["ticker"]
                 cc = st.columns(WIDTHS)
-                on = cc[0].checkbox(" ", value=t in picked, key=f"cb_{t}",
+                on = cc[0].checkbox(" ", key=f"cb_{t}",
                                     label_visibility="collapsed")
-                picked.add(t) if on else picked.discard(t)
+                # ใช้ if ธรรมดา — เขียนเป็น expression ลอย ๆ ไม่ได้
+                # เพราะ Streamlit จะเอาค่าที่ได้ (None) ไปแสดงบนหน้าจอ
+                if on:
+                    picked.add(t)
                 cc[1].markdown(f"<a class='tk' target='_blank' rel='noopener' "
                                f"href='?t={t}'>{t}</a>", unsafe_allow_html=True)
-                cc[2].caption(str(r["ชื่อบริษัท"])[:34])
-                cc[3].caption(_cell(r.get("P/E"), 1))
-                cc[4].caption(_cell(r.get("P/BV"), 2))
-                cc[5].caption(_cell(r.get("D/E"), 2))
-                cc[6].caption(_cell(r.get("ROE (%)"), 1))
-                cc[7].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
-                cc[8].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
+                cc[2].caption(str(r["ชื่อบริษัท"])[:32])
+                cc[3].caption(_cell(r.get("มูลค่าพื้นฐาน (เร็ว)"), 2))
+                d = pd.to_numeric(r.get("ส่วนต่างจากมูลค่า (%)"), errors="coerce")
+                cc[4].markdown(
+                    f"<span style='color:#2e9e5b;font-weight:600'>▲ {d:,.1f}</span>"
+                    if pd.notna(d) and d > 0 else
+                    f"<span class='muted'>{_cell(d, 1)}</span>",
+                    unsafe_allow_html=True)
+                cc[5].caption(_cell(r.get("P/E"), 1))
+                cc[6].caption(_cell(r.get("P/BV"), 2))
+                cc[7].caption(_cell(r.get("D/E"), 2))
+                cc[8].caption(_cell(r.get("ROE (%)"), 1))
+                cc[9].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
+                cc[10].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
 
-            sel = [t for t in res["ticker"] if t in picked]
+            st.session_state["picked"] = picked
+            sel = [t for t in all_tk if t in picked]
             st.markdown(f"**เลือกไว้ {len(sel)} ตัว** "
                         + (f"— {', '.join(sel[:15])}" + (" ..." if len(sel) > 15 else "")
                            if sel else "— ยังไม่ได้เลือก"))
 
-            b1, b2, b3, b4 = st.columns(4)
-            with b1:
-                st.button("เลือกทั้งหน้านี้", use_container_width=True,
-                          on_click=lambda p=list(page["ticker"]): [
-                              st.session_state["picked"].add(x) for x in p])
-            with b2:
-                st.button("ล้างที่เลือก", use_container_width=True,
-                          on_click=lambda: st.session_state["picked"].clear())
+            b3, b4 = st.columns(2)
             with b3:
                 st.button(f"วิเคราะห์ลึก ({len(sel)})",
                           type="primary", use_container_width=True,
@@ -1110,6 +1128,27 @@ if MODE.startswith("วิเคราะห์ลึก"):
             html_table(show, first_col="อันดับ", trim_year=False,
                        max_height=520, link_cols=("ticker",),
                        dec_cols={"คะแนน": 0, "ปีข้อมูล": 0})
+            # ---------- ตารางเปรียบเทียบเต็มรูปแบบ ----------
+            # ใช้ผลที่วิเคราะห์เสร็จแล้ว ไม่ต้องดึงข้อมูลใหม่
+            from screener import build_compare
+            cmp_full = build_compare(df, order=list(under["ticker"]))
+            fullt = cmp_full.get("full")
+            if fullt is not None and not fullt.empty:
+                st.markdown("---")
+                st.markdown("### 📊 ตารางเปรียบเทียบเต็มรูปแบบ")
+                nsec = len(cmp_full.get("sections") or {})
+                ndata = len(fullt) - nsec
+                st.caption(
+                    f"**{ndata} หัวข้อ** ใน {nsec} หมวด รวมสมมติฐานที่ใช้ประเมินมูลค่า "
+                    "(WACC, g1, g2, สัดส่วนมูลค่าสุดท้าย) · "
+                    "ใช้ผลที่วิเคราะห์ไปแล้ว ไม่ได้ดึงข้อมูลใหม่")
+                html_table(fullt, first_col="หัวข้อ", trim_year=False, fit=True,
+                           max_height=720)
+                st.download_button(
+                    "ดาวน์โหลดตารางเปรียบเทียบ (CSV)",
+                    fullt.to_csv().encode("utf-8-sig"),
+                    "เปรียบเทียบเชิงลึก.csv", "text/csv")
+
             st.caption(
                 "**กดที่ชื่อหุ้น** เพื่อเปิดการวิเคราะห์รายตัวพร้อมรายงาน PDF  \n"
                 "**ธง ⚠️** — `ส่วนลดสูงแต่คะแนนต่ำ` มูลค่าที่ประเมินได้อาจมาจาก"
