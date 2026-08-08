@@ -287,9 +287,19 @@ def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP,
     return df[m].reset_index(drop=True)
 
 
+# อัตราส่วนที่ค่าติดลบ "ไม่ได้แปลว่าถูก"
+#   P/E ติดลบ       = ขาดทุน
+#   P/BV ติดลบ      = ส่วนของผู้ถือหุ้นติดลบ
+#   EV/EBITDA ติดลบ = EBITDA ติดลบ (ขาดทุนตั้งแต่ระดับการดำเนินงาน)
+#                     หรือมีเงินสดมากกว่ามูลค่ากิจการ ซึ่งพบในบริษัทกำลังจะเลิก
+# ถ้าไม่บังคับให้เป็นบวก บริษัทที่แย่ที่สุดจะผ่านเกณฑ์ "ถูก" ทุกครั้ง
+POSITIVE_ONLY_FILTER = ("P/E", "P/BV", "EV/EBITDA")
+
+
 def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,
                  min_mcap=None, min_div=None, max_de=None,
-                 min_gross_margin=None, min_net_margin=None) -> pd.DataFrame:
+                 min_gross_margin=None, min_net_margin=None,
+                 max_ev_ebitda=None) -> pd.DataFrame:
     """
     กรองผลจากชั้นที่ 1 — ทุกเงื่อนไขไม่ใส่ก็ได้
 
@@ -300,6 +310,7 @@ def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None
         return df
     m = df["ปัญหา"].eq("")
     checks = [("P/E", max_pe, "le"), ("P/BV", max_pbv, "le"),
+              ("EV/EBITDA", max_ev_ebitda, "le"),
               ("ROE (%)", min_roe, "ge"), ("FCF Yield (%)", min_fcf_yield, "ge"),
               ("มูลค่าตลาด (ล้าน)", min_mcap, "ge"), ("ปันผล (%)", min_div, "ge"),
               ("D/E", max_de, "le"),
@@ -310,8 +321,8 @@ def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None
             continue
         s = pd.to_numeric(df[col], errors="coerce")
         m &= (s <= val) if op == "le" else (s >= val)
-        if col in ("P/E", "P/BV"):
-            m &= s > 0        # P/E ติดลบ = ขาดทุน ไม่ใช่ "ถูก"
+        if col in POSITIVE_ONLY_FILTER:
+            m &= s > 0
     return df[m].reset_index(drop=True)
 
 
