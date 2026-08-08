@@ -1803,12 +1803,13 @@ with t7:
         with st.expander(f"{name} — {sc:.0f} คะแนน ({RK.level(sc)})"
                          if sc is not None else name):
             for it in dd["รายละเอียด"]:
-                c = st.columns([2.2, 1, 1, 4])
-                c[0].markdown(f"**{it['ตัวชี้วัด']}**")
-                v = it["ค่า"]
-                c[1].markdown(f"{v:,.2f}" if isinstance(v, float) else str(v))
-                c[2].markdown(f"เสี่ยง **{it['คะแนนเสี่ยง']:.0f}**")
-                c[3].caption(it["เกณฑ์"])
+                rc = st.columns([2.2, 1, 1, 4])
+                rc[0].markdown(f"**{it['ตัวชี้วัด']}**")
+                # ห้ามตั้งชื่อตัวแปรว่า v — จะทับผลประเมินมูลค่าที่ใช้ทั้งหน้า
+                iv = it["ค่า"]
+                rc[1].markdown(f"{iv:,.2f}" if isinstance(iv, float) else str(iv))
+                rc[2].markdown(f"เสี่ยง **{it['คะแนนเสี่ยง']:.0f}**")
+                rc[3].caption(it["เกณฑ์"])
 
     st.markdown("#### ด้านที่ประเมินจากลักษณะอุตสาหกรรม")
     st.caption("ตัวเลขเหล่านี้ **ไม่ได้มาจากงบการเงินของบริษัทนี้** "
