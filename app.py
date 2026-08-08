@@ -110,6 +110,10 @@ def apply_theme(name: str):
   .mc .v {{ color:{c['txt']}; font-size:1.3rem; font-weight:700; line-height:1.3; }}
   .mc .d {{ font-size:.78rem; }}
   .tw {{ overflow-x:auto; }}
+  /* ชื่อหุ้นที่กดได้ในตารางคัดกรอง */
+  a.tk {{ color:{c['pri']} !important; font-weight:700; text-decoration:none;
+         border-bottom:1px dashed {c['pri']}; }}
+  a.tk:hover {{ opacity:.75; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -180,12 +184,16 @@ def _cell(x, dec=2):
 
 
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
-               max_height=None):
+               max_height=None, link_cols=()):
     """
     แสดง DataFrame เป็นตาราง HTML
 
     max_height : ถ้าใส่ (เช่น 520) ตารางจะสูงไม่เกินนั้นแล้ว **เลื่อนลงดูได้**
                  พร้อมตรึงหัวตารางไว้ด้านบน — ใช้กับรายการหุ้นยาว ๆ
+    link_cols  : ชื่อคอลัมน์ที่จะทำเป็นลิงก์กดได้ (เช่น "ticker")
+                 กดแล้วจะพาไปวิเคราะห์รายตัวของหุ้นตัวนั้น
+                 กลไก : ลิงก์ใส่พารามิเตอร์ ?t=AAPL ต่อท้าย URL
+                        แอปอ่านค่านี้ตอนโหลดใหม่แล้วสลับโหมดให้เอง
     """
     cols = [str(c)[:4] if trim_year else str(c) for c in df.columns]
     style = f" style='max-height:{max_height}px;overflow-y:auto'" if max_height else ""
@@ -195,7 +203,13 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
     h.append("</tr></thead><tbody>")
     for name in df.index:
         h.append(f"<tr><td class='l'>{name}</td>")
-        h += [f"<td>{_cell(df.loc[name, c], dec)}</td>" for c in df.columns]
+        for c in df.columns:
+            val = _cell(df.loc[name, c], dec)
+            if c in link_cols and val != "—":
+                # target="_self" = เปิดในแท็บเดิม ไม่เด้งแท็บใหม่
+                val = (f"<a class='tk' target='_self' "
+                       f"href='?t={str(df.loc[name, c]).strip()}'>{val}</a>")
+            h.append(f"<td>{val}</td>")
         h.append("</tr>")
     h.append("</tbody></table></div>")
     st.markdown("".join(h), unsafe_allow_html=True)
@@ -233,10 +247,28 @@ with tt2:
               on_click=toggle_theme, use_container_width=True,
               help="สลับระหว่างธีมมืดและธีมสว่าง กราฟจะเปลี่ยนสีตามอัตโนมัติ")
 
-MODE = st.radio("โหมด",
-                ["วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
-                 "เปรียบเทียบ 2–10 ตัว"],
-                horizontal=True, label_visibility="collapsed")
+MODES = ["วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
+         "เปรียบเทียบ 2–10 ตัว"]
+
+# ---------------------------------------------------------------------------
+# รับคำสั่ง "กดชื่อหุ้นในตารางแล้วมาวิเคราะห์รายตัว"
+#
+# ลิงก์ในตารางจะพาไปที่ URL เดิมแต่ต่อท้ายด้วย ?t=AAPL
+# ตรงนี้อ่านค่านั้น สลับโหมดให้ แล้วล้างพารามิเตอร์ทิ้ง
+# (ต้องล้าง มิฉะนั้นกดปุ่มอื่นทีหลังจะเด้งกลับมาหุ้นตัวเดิมตลอด)
+# ---------------------------------------------------------------------------
+_qp = st.query_params
+if "t" in _qp:
+    st.session_state["mode"] = MODES[0]
+    st.session_state["jump"] = str(_qp["t"]).strip().upper()
+    st.session_state["ran"] = True
+    st.query_params.clear()
+
+if "mode" not in st.session_state:
+    st.session_state["mode"] = MODES[0]
+
+MODE = st.radio("โหมด", MODES, horizontal=True,
+                label_visibility="collapsed", key="mode")
 
 
 @st.cache_data(show_spinner=False, ttl=24 * 3600)
@@ -324,14 +356,51 @@ if MODE.startswith("คัดกรอง"):
             show = res[[c for c in cols if c in res.columns]].head(200).copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
-            html_table(show, first_col="อันดับ", trim_year=False, max_height=560)
+            # link_cols = ทำชื่อหุ้นให้กดได้ → เด้งไปวิเคราะห์รายตัวทันที
+            html_table(show, first_col="อันดับ", trim_year=False,
+                       max_height=560, link_cols=("ticker",))
             st.caption(f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
-                       "· เลื่อนลงในตารางเพื่อดูตัวถัดไป · ดาวน์โหลด CSV เพื่อดูทั้งหมด")
+                       "· **กดที่ชื่อหุ้น** เพื่อดูการวิเคราะห์รายตัวทันที "
+                       "· เลื่อนลงในตารางเพื่อดูตัวถัดไป")
             st.download_button("ดาวน์โหลดผลทั้งหมด (CSV)",
                                res.to_csv(index=False).encode("utf-8-sig"),
                                "ผลคัดกรอง.csv", "text/csv")
-            st.success("**ขั้นต่อไป** — คัดรายชื่อข้างบนราว 10–20 ตัว "
-                       "แล้วไปที่โหมด **วิเคราะห์ลึกหลายตัว** เพื่อประเมินมูลค่าจริง")
+
+            # ---------- ติ๊กเลือกหลายตัวส่งไปวิเคราะห์ลึก ----------
+            st.markdown("---")
+            st.markdown("### เลือกหุ้นไปวิเคราะห์ลึก")
+            st.caption("ชั้นคัดกรองบอกได้แค่ว่า 'ตัวเลขสรุปดูน่าสนใจ' "
+                       "ยังไม่ได้ประเมินมูลค่า — เลือกตัวที่สนใจส่งไปวิเคราะห์เต็มรูปแบบ")
+
+            opts = list(res["ticker"].head(200))
+            labels = {t: f"{t} — {str(n)[:28]}"
+                      for t, n in zip(res["ticker"], res["ชื่อบริษัท"])}
+            sel = st.multiselect("ติ๊กเลือกได้หลายตัว", opts,
+                                 format_func=lambda t: labels.get(t, t),
+                                 placeholder="พิมพ์เพื่อค้นหา หรือกดเลือกจากรายการ")
+
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                st.button(f"เลือก 10 อันดับแรก", use_container_width=True,
+                          on_click=lambda: st.session_state.update(
+                              {"handoff": opts[:10], "mode": MODES[2]}),
+                          disabled=not opts)
+            with b2:
+                st.button(f"วิเคราะห์ลึก {len(sel)} ตัวที่เลือก",
+                          type="primary", use_container_width=True,
+                          disabled=len(sel) == 0,
+                          on_click=lambda: st.session_state.update(
+                              {"handoff": sel, "mode": MODES[2]}))
+            with b3:
+                st.button(f"เปรียบเทียบ {len(sel)} ตัวที่เลือก",
+                          use_container_width=True,
+                          disabled=not (2 <= len(sel) <= 10),
+                          help="เลือก 2–10 ตัวจึงจะเปรียบเทียบได้",
+                          on_click=lambda: st.session_state.update(
+                              {"handoff": sel, "mode": MODES[3]}))
+            if len(sel) > 20:
+                st.warning(f"เลือกมา {len(sel)} ตัว — วิเคราะห์ลึกจะใช้เวลาราว "
+                           f"{len(sel)*30/60:.0f} นาที แนะนำไม่เกิน 20 ตัวต่อครั้ง")
 
         st.error("⚠️ **ชั้นนี้ยังไม่ได้ประเมินมูลค่า** — P/E ต่ำไม่ได้แปลว่าถูก "
                  "อาจเป็นเพราะกำไรปีล่าสุดสูงผิดปกติ หรือธุรกิจกำลังถดถอย\n\n"
@@ -350,12 +419,17 @@ if MODE.startswith("เปรียบเทียบ"):
             "ระบบจะวิเคราะห์ลึกทุกตัวแล้ววางเทียบกันให้เห็นชัด ๆ\n\n"
             "⏱️ ราว 30 วินาทีต่อตัว")
 
+    handoff = st.session_state.pop("handoff", None)
+    if handoff:
+        st.success(f"รับรายชื่อจากหน้าคัดกรองแล้ว {len(handoff)} ตัว")
+
     picks = st.multiselect("เลือกหุ้นที่จะเปรียบเทียบ", OPTIONS,
                            max_selections=MAX_COMPARE,
                            placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท")
     cmp_list = [LOOKUP.get(p, str(p).split(" ")[0]) for p in picks]
 
     extra = st.text_input("หรือพิมพ์เพิ่มเอง (คั่นด้วยเว้นวรรค)",
+                          value=" ".join(handoff) if handoff else "",
                           placeholder="เช่น AAPL MSFT PTT.BK")
     cmp_list += [x.strip().upper() for x in extra.split() if x.strip()]
     cmp_list = list(dict.fromkeys(cmp_list))[:MAX_COMPARE]
@@ -412,20 +486,36 @@ if MODE.startswith("วิเคราะห์ลึก"):
             "⏱️ ใช้เวลาราว **30 วินาทีต่อหุ้น 1 ตัว** ในครั้งแรก "
             "(ตัวที่เคยวิเคราะห์แล้วจะเร็วมาก) — แนะนำให้เริ่มที่ 10–15 ตัวก่อน")
 
+    handoff = st.session_state.pop("handoff", None)
+    if handoff:
+        st.session_state["deep_text"] = " ".join(handoff)
+        st.success(f"รับรายชื่อจากหน้าคัดกรองแล้ว {len(handoff)} ตัว — "
+                   "กด **เริ่มวิเคราะห์ลึก** ได้เลย")
+
     s1, s2 = st.columns([3, 2])
     with s1:
-        group = st.radio("ชุดหุ้น", ["หุ้นไทย", "หุ้นสหรัฐยอดนิยม", "เลือกเอง"],
-                         horizontal=True)
+        group = st.radio("ชุดหุ้น",
+                         ["รายชื่อที่ส่งมา / พิมพ์เอง", "หุ้นไทย",
+                          "หุ้นสหรัฐยอดนิยม", "เลือกจากรายชื่อ"],
+                         horizontal=True,
+                         index=0 if st.session_state.get("deep_text") else 1)
     with s2:
         n_max = st.slider("จำนวนสูงสุด", 3, 40, 10)
 
-    if group == "เลือกเอง":
-        picks = st.multiselect("เลือกหุ้นที่ต้องการสแกน", OPTIONS, max_selections=40)
+    if group.startswith("รายชื่อที่ส่งมา"):
+        txt = st.text_area("รายชื่อหุ้น (คั่นด้วยเว้นวรรคหรือขึ้นบรรทัดใหม่)",
+                           key="deep_text", height=90,
+                           placeholder="เช่น AAPL MSFT PTT.BK KBANK.BK")
+        scan_list = [x.strip().upper() for x in txt.replace(",", " ").split()][:n_max]
+    elif group == "เลือกจากรายชื่อ":
+        picks = st.multiselect("เลือกหุ้นที่ต้องการวิเคราะห์", OPTIONS, max_selections=40)
         scan_list = [LOOKUP.get(p, str(p).split(" ")[0]) for p in picks]
     else:
         scan_list = preset("thai" if group == "หุ้นไทย" else "us")[:n_max]
-        st.caption(f"จะสแกน : {', '.join(scan_list[:10])}"
-                   + (f" ... รวม {len(scan_list)} ตัว" if len(scan_list) > 10 else ""))
+    if scan_list:
+        st.caption(f"จะวิเคราะห์ {len(scan_list)} ตัว : {', '.join(scan_list[:12])}"
+                   + (" ..." if len(scan_list) > 12 else "")
+                   + f" · คาดว่าราว {len(scan_list)*30/60:.0f} นาที")
 
     f1, f2, f3 = st.columns(3)
     with f1:
@@ -437,7 +527,7 @@ if MODE.startswith("วิเคราะห์ลึก"):
     with f3:
         min_score = st.slider("คะแนนความน่าเชื่อถือขั้นต่ำ", 0, 100, 0, 5)
 
-    if st.button("เริ่มสแกน", type="primary", use_container_width=True):
+    if st.button("เริ่มวิเคราะห์ลึก", type="primary", use_container_width=True):
         if not scan_list:
             st.warning("ยังไม่ได้เลือกหุ้น")
             st.stop()
@@ -472,7 +562,9 @@ if MODE.startswith("วิเคราะห์ลึก"):
                     "ปีข้อมูล", "ROE เฉลี่ย (%)", "ตลาดคาดโต (%)", "ใช้ DCF"]
             show = under[[c for c in cols if c in under.columns]].copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
-            html_table(show, first_col="อันดับ", trim_year=False, max_height=520)
+            html_table(show, first_col="อันดับ", trim_year=False,
+                       max_height=520, link_cols=("ticker",))
+            st.caption("**กดที่ชื่อหุ้น** เพื่อเปิดการวิเคราะห์รายตัวพร้อมรายงาน PDF")
 
         bad = df[~df["ปัญหา"].eq("")]
         if not bad.empty:
@@ -487,15 +579,21 @@ if MODE.startswith("วิเคราะห์ลึก"):
     st.stop()
 
 
+# หุ้นที่ถูกกดมาจากตารางคัดกรอง (ถ้ามี)
+JUMP = st.session_state.pop("jump", None)
+if JUMP:
+    st.success(f"เปิดจากตารางคัดกรอง : **{JUMP}**")
+
 manual = st.toggle("พิมพ์ ticker เอง (สำหรับหุ้นที่ไม่มีในรายชื่อ)",
-                   value=not OPTIONS,
+                   value=bool(JUMP) or not OPTIONS,
                    help="รายชื่อหุ้นไทยเป็นรายชื่อตั้งต้น ไม่ครบทุกตัว "
                         "ถ้าหาไม่เจอให้เปิดสวิตช์นี้แล้วพิมพ์เอง")
 
 c1, c2 = st.columns([3, 1])
 with c1:
     if manual or not OPTIONS:
-        ticker = st.text_input("ใส่ชื่อย่อหุ้น", value="AAPL",
+        ticker = st.text_input("ใส่ชื่อย่อหุ้น", value=JUMP or "AAPL",
+                               key=f"tk_{JUMP or 'default'}",
                                placeholder="เช่น AAPL, MSFT, PTT.BK",
                                label_visibility="collapsed").strip().upper()
     else:
