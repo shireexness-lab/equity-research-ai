@@ -57,11 +57,19 @@ ZONE_COLOR = {"Strong Buy": "#1b5e20", "Buy": "#2e7d32", "Hold": "#757575",
 #   เพื่อให้ปุ่มในหน้าเว็บเป็นตัวตัดสิน ไม่ว่าผู้ใช้จะตั้งค่าอะไรไว้ในเมนู
 # ---------------------------------------------------------------------------
 
+# pri = สีสำหรับ "ตัวหนังสือ" เช่น ลิงก์ หัวตาราง — ต้องอ่านออกบนพื้นหลังของธีม
+# btn = สีสำหรับ "พื้นปุ่มหลัก" ซึ่งมีตัวหนังสือสีขาวทับอยู่ — ต้องเข้มพอ
+#
+# ทำไมต้องแยกสองค่า : ธีมมืดใช้ฟ้าสว่าง #5b9bd5 เป็นสีลิงก์เพราะอ่านง่ายบนพื้นดำ
+# แต่ถ้าเอาสีนั้นมาเป็นพื้นปุ่มแล้วใส่ตัวหนังสือขาว ความต่างเหลือ 2.96
+# ซึ่งต่ำกว่าเกณฑ์อ่านง่าย (4.5) — ตัวหนังสือจะจางจนอ่านลำบาก
 THEMES = {
     "dark":  {"bg": "#0e1117", "bg2": "#1a1f2b", "txt": "#e8eaed",
-              "dim": "#9aa4b2", "line": "rgba(255,255,255,.14)", "pri": "#5b9bd5"},
+              "dim": "#9aa4b2", "line": "rgba(255,255,255,.14)",
+              "pri": "#5b9bd5", "btn": "#2f6fae"},
     "light": {"bg": "#ffffff", "bg2": "#f2f5f9", "txt": "#1a1a1a",
-              "dim": "#5f6b7a", "line": "rgba(0,0,0,.12)", "pri": "#1f4e79"},
+              "dim": "#5f6b7a", "line": "rgba(0,0,0,.12)",
+              "pri": "#1f4e79", "btn": "#1f4e79"},
 }
 
 if "theme" not in st.session_state:
@@ -93,6 +101,50 @@ def apply_theme(name: str):
 
   /* แท็บ */
   [data-testid="stTabs"] button p {{ color:{c['txt']}; }}
+
+  /* ---------- ปุ่ม ----------
+     ต้องกำหนดเองทั้งหมด เพราะ Streamlit ใช้สีจาก config.toml ซึ่งตั้งเป็นธีมมืด
+     พอผู้ใช้สลับเป็นธีมสว่าง ปุ่มยังเป็นกล่องสีเข้มตัวหนังสือสีเข้ม = มองไม่เห็น
+     เลือกเจาะจงหลายชื่อ เพราะ Streamlit เปลี่ยนชื่อ data-testid ตามรุ่น */
+  .stButton > button,
+  .stDownloadButton > button,
+  [data-testid="stBaseButton-secondary"],
+  [data-testid="stBaseButton-secondaryFormSubmit"],
+  [data-testid="stDownloadButton"] button {{
+      background-color:{c['bg2']} !important;
+      color:{c['txt']} !important;
+      border:1px solid {c['line']} !important;
+      font-weight:600;
+      transition:border-color .12s, background-color .12s;
+  }}
+  .stButton > button *,
+  .stDownloadButton > button *,
+  [data-testid="stBaseButton-secondary"] * {{ color:{c['txt']} !important; }}
+
+  .stButton > button:hover,
+  .stDownloadButton > button:hover,
+  [data-testid="stBaseButton-secondary"]:hover {{
+      border-color:{c['pri']} !important;
+      background-color:{c['pri']}22 !important;
+  }}
+
+  /* ปุ่มหลัก — พื้นสีเน้น ตัวหนังสือขาวเสมอทั้งสองธีม */
+  .stButton > button[kind="primary"],
+  [data-testid="stBaseButton-primary"],
+  [data-testid="stBaseButton-primaryFormSubmit"] {{
+      background-color:{c['btn']} !important;
+      color:#ffffff !important;
+      border:1px solid {c['btn']} !important;
+  }}
+  .stButton > button[kind="primary"] *,
+  [data-testid="stBaseButton-primary"] * {{ color:#ffffff !important; }}
+  .stButton > button[kind="primary"]:hover,
+  [data-testid="stBaseButton-primary"]:hover {{ opacity:.88; }}
+
+  /* ปุ่มที่กดไม่ได้ — ต้องดูจางแต่ยังอ่านออก */
+  .stButton > button:disabled,
+  .stButton > button:disabled * {{
+      opacity:.45 !important; color:{c['dim']} !important; }}
 
   /* ส่วนประกอบที่เราสร้างเอง */
   /* พื้นที่แสดงผล — ใช้ความกว้างจอเกือบเต็ม เพื่อให้ตารางหลายคอลัมน์อ่านได้ในหน้าเดียว
