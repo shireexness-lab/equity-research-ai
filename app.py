@@ -603,6 +603,16 @@ if MODE.startswith("คัดกรอง"):
             f"จาก{_ar.get('ที่มา (ไทย)','-')})  \n"
             "ไม่ต้องคัดกรองใหม่ — กด **เริ่มคัดกรอง (ดึงข้อมูลใหม่)** "
             "เฉพาะเมื่อต้องการราคาล่าสุด")
+    elif st.session_state.get("quick_df") is None and _saved is None:
+        st.warning(
+            "**ผลคัดกรองที่บันทึกไว้หายไป** — เกิดขึ้นเมื่อ Streamlit รีสตาร์ท "
+            "(หลัง `git push` โค้ดใหม่ หรือแอปหลับเพราะไม่มีคนใช้ราว 30 นาที)  \n"
+            "ที่เก็บในเครื่องของ Streamlit เป็นแบบชั่วคราว จึงหายไปพร้อมกัน\n\n"
+            "**วิธีให้ไม่หายอีก** — เก็บผลไว้ที่ถาวร เลือกทางใดทางหนึ่ง  \n"
+            "1. รันบน MacBook แล้ว push : "
+            "`python3 tools_snapshot_build.py --thai` → `git push` "
+            "(ไฟล์อยู่ใน `data/snapshots/` จึงรอดทุกการรีสตาร์ท)  \n"
+            "2. ตั้งค่า Google Drive ตามคู่มือไฟล์ 19 — บันทึกอัตโนมัติทุกครั้ง")
 
     if run_fresh:
         bar, note = st.progress(0.0), st.empty()
@@ -938,14 +948,30 @@ if MODE.startswith("คัดกรอง"):
                       on_click=_check_all, args=(all_tk, False))
 
             HEADS = ["เลือก", "หุ้น", "รายได้ YoY", "กำไร YoY",
-                     "P/E", "P/BV", "D/E", "ROE %", "GM %", "NM %", "ชื่อบริษัท"]
-            WIDTHS = [0.5, 1.2, 1.1, 1.0, 0.8, 0.8, 0.8, 0.9, 0.9, 0.9, 2.4]
+                     "ดู", "P/E", "P/BV", "D/E", "ROE %", "GM %", "NM %",
+                     "ชื่อบริษัท"]
+            WIDTHS = [0.5, 1.1, 1.0, 1.0, 0.6, 0.8, 0.8, 0.8, 0.9, 0.9, 0.9, 2.2]
             hd = st.columns(WIDTHS)
             for col, txt in zip(hd, HEADS):
                 col.markdown(f"<span class='muted'><b>{txt}</b></span>",
                              unsafe_allow_html=True)
 
-            # แสดงทุกตัวที่ผ่านเกณฑ์ ไม่แบ่งหน้า
+            # ---------- ปุ่มเปิดวิเคราะห์รายตัวแบบไม่โหลดหน้าใหม่ ----------
+            # นี่คือทางแก้รากของปัญหา "กลับมาแล้วผลคัดกรองหาย"
+            #
+            # ลิงก์ <a href='?t=XXX'> ทำให้เบราว์เซอร์โหลดหน้าใหม่เสมอ
+            #   เปิดแท็บเดิม -> session เดิมถูกทิ้ง ผลคัดกรองหาย
+            #   เปิดแท็บใหม่ -> แท็บนั้นเป็น session ใหม่ที่ไม่มีผลคัดกรอง
+            # ทั้งสองทางจบลงที่ "ต้องคัดกรองใหม่"
+            #
+            # ปุ่มของ Streamlit ทำงานผ่าน websocket เดิม ไม่มีการโหลดหน้าใหม่
+            # session_state จึงอยู่ครบ กลับมาโหมดคัดกรองแล้วเจอผลเดิมทันที
+            def _open_stock(tk):
+                st.session_state["jump"] = tk
+                st.session_state["mode"] = MODES[0]
+                # ตั้งธงให้หน้าวิเคราะห์เริ่มคำนวณเอง ไม่ต้องกดปุ่มซ้ำ
+                st.session_state["ran"] = True
+
             picked = set()
             for _, r in res.iterrows():
                 t = r["ticker"]
@@ -956,8 +982,8 @@ if MODE.startswith("คัดกรอง"):
                 # เพราะ Streamlit จะเอาค่าที่ได้ (None) ไปแสดงบนหน้าจอ
                 if on:
                     picked.add(t)
-                cc[1].markdown(f"<a class='tk' target='_blank' rel='noopener' "
-                               f"href='?t={t}'>{t}</a>", unsafe_allow_html=True)
+                cc[1].markdown(f"<span class='tk'><b>{t}</b></span>",
+                               unsafe_allow_html=True)
                 for slot, key in ((2, "รายได้ YoY (%)"), (3, "กำไร YoY (%)")):
                     gv = pd.to_numeric(r.get(key), errors="coerce")
                     cc[slot].markdown(
@@ -965,13 +991,21 @@ if MODE.startswith("คัดกรอง"):
                         if pd.notna(gv) and gv > 0 else
                         f"<span class='muted'>{_cell(gv, 1)}</span>",
                         unsafe_allow_html=True)
-                cc[4].caption(_cell(r.get("P/E"), 1))
-                cc[5].caption(_cell(r.get("P/BV"), 2))
-                cc[6].caption(_cell(r.get("D/E"), 2))
-                cc[7].caption(_cell(r.get("ROE (%)"), 1))
-                cc[8].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
-                cc[9].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
-                cc[10].caption(str(r["ชื่อบริษัท"])[:36])
+                cc[4].button("🔍", key=f"go_{t}", help=f"วิเคราะห์ {t}",
+                             on_click=_open_stock, args=(t,))
+                cc[5].caption(_cell(r.get("P/E"), 1))
+                cc[6].caption(_cell(r.get("P/BV"), 2))
+                cc[7].caption(_cell(r.get("D/E"), 2))
+                cc[8].caption(_cell(r.get("ROE (%)"), 1))
+                cc[9].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
+                cc[10].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
+                cc[11].caption(str(r["ชื่อบริษัท"])[:34])
+
+            st.info(
+                "🔍 **กดปุ่มแว่นขยายเพื่อวิเคราะห์รายตัว** — วิธีนี้ไม่โหลดหน้าใหม่ "
+                "ผลคัดกรองจึงอยู่ครบ กดกลับมาโหมดคัดกรองแล้วเจอเหมือนเดิมทันที  \n"
+                "ส่วนการกดชื่อหุ้นในตารางด้านบนจะเปิดแท็บใหม่ ซึ่งแท็บนั้นจะไม่มี"
+                "ผลคัดกรอง — เหมาะกับตอนอยากเปิดดูหลายตัวเทียบกันเท่านั้น")
 
             st.session_state["picked"] = picked
             sel = [t for t in all_tk if t in picked]
