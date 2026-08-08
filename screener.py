@@ -51,7 +51,8 @@ ZONE_ORDER = ["Strong Buy", "Buy", "Hold", "Reduce", "Sell"]
 QUICK_COLS = ["ticker", "ชื่อบริษัท", "กลุ่ม", "สกุลเงิน", "ราคา",
               "มูลค่าตลาด (ล้าน)", "P/E", "P/BV", "P/S", "EV/EBITDA",
               "ROE (%)", "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)",
-              "D/E", "ปันผล (%)", "FCF Yield (%)", "โตรายได้ (%)"]
+              "D/E", "ปันผล (%)", "FCF Yield (%)",
+              "รายได้ YoY (%)", "กำไร YoY (%)"]
 
 
 def _num(x):
@@ -125,7 +126,13 @@ def quick_one(ticker: str) -> dict:
             "D/E": de / 100 if de is not None else None,
             "ปันผล (%)": _num(info.get("dividendYield")),
             "FCF Yield (%)": (fcf / mcap * 100) if fcf and mcap else None,
-            "โตรายได้ (%)": pct("revenueGrowth"),
+            # yfinance ให้การเติบโตแบบ **ไตรมาสล่าสุดเทียบไตรมาสเดียวกันปีก่อน**
+            # ซึ่งเป็นวิธีที่ถูกต้องสำหรับธุรกิจที่มีฤดูกาล (ห้างสรรพสินค้า ท่องเที่ยว
+            # เกษตร) เพราะเทียบช่วงเวลาเดียวกันของปี
+            "รายได้ YoY (%)": pct("revenueGrowth"),
+            "กำไร YoY (%)": (pct("earningsGrowth")
+                             if info.get("earningsGrowth") is not None
+                             else pct("earningsQuarterlyGrowth")),
             "ปัญหา": "",
         })
     except Exception as e:
@@ -287,82 +294,107 @@ def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP,
     return df[m].reset_index(drop=True)
 
 
-def quick_fair_value(df, target_pe=15.0, target_fcf_yield=6.0,
-                     graham_factor=22.5) -> pd.DataFrame:
+GROWTH_COLS = ["รายได้ QoQ (%)", "รายได้ YoY-Q (%)",
+               "กำไร QoQ (%)", "กำไร YoY-Q (%)",
+               "FCF QoQ (%)", "FCF YoY-Q (%)", "งบไตรมาสล่าสุด"]
+
+
+def _q_growth(s: pd.Series):
     """
-    ประเมินมูลค่าพื้นฐานแบบเร็ว จาก **ตัวเลขของหุ้นตัวนั้นเอง**
+    คืน (QoQ, YoY) จากอนุกรมรายไตรมาสที่เรียงจากใหม่ไปเก่า
 
-    ทำไมต้องมีวิธีเร็ว
-    -------------------
-    การทำ DCF เต็มรูปแบบใช้เวลาราว 30 วินาทีต่อหุ้น 1 ตัว
-    หุ้นไทยทั้งตลาด 866 ตัว = 7 ชั่วโมง จึงทำในชั้นคัดกรองไม่ได้
-    แต่ถ้าไม่มีมูลค่าอ้างอิงเลย ผู้ใช้ก็ไม่รู้ว่า P/E 4 เท่านั้น "ถูก" หรือ "กำลังจะเจ๊ง"
+    QoQ = ไตรมาสล่าสุด เทียบ ไตรมาสก่อนหน้า        (ตำแหน่ง 0 vs 1)
+    YoY = ไตรมาสล่าสุด เทียบ ไตรมาสเดียวกันปีก่อน  (ตำแหน่ง 0 vs 4)
 
-    3 วิธีที่ใช้ — ทุกวิธีคำนวณจากตัวเลขของหุ้นตัวนั้นล้วน ไม่ใช้ค่ากลางของกลุ่ม
-    ---------------------------------------------------------------------------
-    1. **Graham Number**  = รากที่สอง(22.5 x EPS x มูลค่าทางบัญชีต่อหุ้น)
-       เบนจามิน เกรแฮมเสนอไว้ว่าหุ้นตั้งรับควรมี P/E x P/BV ไม่เกิน 22.5
-       เขียนใหม่ด้วยตัวเลขที่เรามี : ราคา x รากที่สอง(22.5 / (P/E x P/BV))
-
-    2. **ฐานกำไร**       = EPS x P/E เป้าหมาย
-       ถ้าให้ตลาดยอมจ่าย P/E เท่าที่ตั้งไว้ ราคาควรเป็นเท่าไร
-
-    3. **ฐานกระแสเงินสด** = FCF ต่อหุ้น / ผลตอบแทนที่ต้องการ
-       มองหุ้นเหมือนตราสารที่จ่ายเงินสด ถ้าต้องการผลตอบแทน 6% ควรจ่ายเท่าไร
-
-    ผลลัพธ์ใช้ **ค่ากลางของวิธีที่คำนวณได้** เพราะแต่ละวิธีมีจุดบอดคนละแบบ
-    ค่ากลางทนต่อวิธีที่ให้ค่าสุดโต่งได้ดีกว่าค่าเฉลี่ย
-
-    ข้อจำกัดที่ต้องบอกให้ชัด
-    -------------------------
-    ทั้งสามวิธีใช้ตัวเลข **12 เดือนล่าสุด** จุดเดียว ไม่ได้ดูแนวโน้มย้อนหลัง
-    บริษัทที่เพิ่งมีกำไรพิเศษจะดูถูกเกินจริง บริษัทที่เพิ่งขาดทุนชั่วคราวจะดูแพงเกินจริง
-    และไม่ได้คิดเรื่องการเติบโตในอนาคตเลย
-
-    นี่คือ **เครื่องมือคัดกรอง ไม่ใช่การประเมินมูลค่า** — ตัวที่ผ่านต้องส่งไป DCF ต่อ
-
-    คืน DataFrame เดิม + คอลัมน์ใหม่ :
-        มูลค่าพื้นฐาน (เร็ว) · ส่วนต่างจากมูลค่า (%) · วิธีที่ใช้
+    ใช้ค่าสัมบูรณ์ของฐานเป็นตัวหาร เพื่อให้การเปลี่ยนแปลงจากขาดทุนเป็นกำไร
+    ได้เครื่องหมายที่ถูกต้อง (ถ้าหารด้วยค่าติดลบตรง ๆ เครื่องหมายจะกลับด้าน
+    กำไรที่ดีขึ้นจะกลายเป็นตัวเลขติดลบ ซึ่งอ่านผิดความหมายทันที)
     """
-    if df.empty:
+    def _chg(new, old):
+        if new is None or old is None or old == 0 or not np.isfinite(old):
+            return None
+        return (new - old) / abs(old) * 100
+
+    v = [float(x) if pd.notna(x) else None for x in s]
+    qoq = _chg(v[0], v[1]) if len(v) >= 2 else None
+    yoy = _chg(v[0], v[4]) if len(v) >= 5 else None
+    return qoq, yoy
+
+
+def _row_of(df, *names):
+    """หาแถวจากงบ โดยลองหลายชื่อ — yfinance ตั้งชื่อไม่เหมือนกันทุกบริษัท"""
+    if df is None or getattr(df, "empty", True):
+        return None
+    for n in names:
+        if n in df.index:
+            s = df.loc[n]
+            if s.notna().any():
+                return s
+    return None
+
+
+def growth_one(ticker: str) -> dict:
+    """การเติบโตรายไตรมาสของหุ้น 1 ตัว — ต้องดึงงบไตรมาสเพิ่ม 2 คำขอ"""
+    row = {"ticker": ticker}
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        inc = t.quarterly_income_stmt
+        cf = t.quarterly_cashflow
+
+        rev = _row_of(inc, "Total Revenue", "Operating Revenue")
+        net = _row_of(inc, "Net Income", "Net Income Common Stockholders",
+                      "Net Income Including Noncontrolling Interests")
+        ocf = _row_of(cf, "Operating Cash Flow",
+                      "Total Cash From Operating Activities")
+        capex = _row_of(cf, "Capital Expenditure", "Capital Expenditures")
+
+        fcf = None
+        if ocf is not None:
+            # CapEx ใน yfinance เป็นค่าติดลบอยู่แล้ว จึงบวกเข้าไปตรง ๆ
+            fcf = ocf + capex.reindex(ocf.index).fillna(0) if capex is not None else ocf
+
+        for label, s in (("รายได้", rev), ("กำไร", net), ("FCF", fcf)):
+            q, y = _q_growth(s) if s is not None else (None, None)
+            row[f"{label} QoQ (%)"] = q
+            row[f"{label} YoY-Q (%)"] = y
+
+        if inc is not None and not inc.empty and len(inc.columns):
+            row["งบไตรมาสล่าสุด"] = str(inc.columns[0])[:10]
+        row["ปัญหางบไตรมาส"] = ""
+    except Exception as e:
+        row["ปัญหางบไตรมาส"] = f"{type(e).__name__}: {str(e)[:50]}"
+    return row
+
+
+def quarterly_growth(tickers, workers=4, progress=None) -> pd.DataFrame:
+    """
+    ดึงการเติบโตรายไตรมาสของหุ้นหลายตัว
+
+    **ใช้กับรายชื่อที่คัดมาแล้วเท่านั้น ไม่ใช่ทั้งตลาด**
+    เพราะต้องดึงงบไตรมาสเพิ่มอีก 2 คำขอต่อหุ้น
+    ถ้าทำกับหุ้นไทยทั้ง 866 ตัว = 1,732 คำขอเพิ่ม ซึ่งจะโดน Yahoo บล็อกแน่นอน
+    และทำให้อัตราดึงสำเร็จ 99% ที่ได้มายากตกลงทันที
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    tickers = list(dict.fromkeys(tickers))
+    rows = []
+    with ThreadPoolExecutor(max_workers=min(workers, 8)) as ex:
+        futs = {ex.submit(growth_one, t): t for t in tickers}
+        for i, f in enumerate(as_completed(futs), 1):
+            rows.append(f.result())
+            if progress:
+                progress(i, len(tickers), futs[f])
+    return pd.DataFrame(rows)
+
+
+def attach_growth(df: pd.DataFrame, growth: pd.DataFrame) -> pd.DataFrame:
+    """รวมตารางการเติบโตรายไตรมาสเข้ากับตารางคัดกรอง"""
+    if df.empty or growth is None or growth.empty:
         return df
-
-    out = df.copy()
-    price = pd.to_numeric(out.get("ราคา"), errors="coerce")
-    pe = pd.to_numeric(out.get("P/E"), errors="coerce")
-    pbv = pd.to_numeric(out.get("P/BV"), errors="coerce")
-    fcy = pd.to_numeric(out.get("FCF Yield (%)"), errors="coerce")
-
-    # ใช้ได้เฉพาะเมื่อตัวหารเป็นบวก — P/E ติดลบแปลว่าขาดทุน ไม่ใช่ถูก
-    ok_pe = pe > 0
-    ok_pbv = pbv > 0
-
-    eps = (price / pe).where(ok_pe)                    # กำไรต่อหุ้น
-    bvps = (price / pbv).where(ok_pbv)                 # มูลค่าทางบัญชีต่อหุ้น
-    fcfps = (price * fcy / 100).where(fcy > 0)         # FCF ต่อหุ้น
-
-    graham = np.sqrt(graham_factor * eps * bvps)
-    by_eps = eps * target_pe
-    by_fcf = fcfps / (target_fcf_yield / 100) if target_fcf_yield else None
-
-    parts = {"Graham": graham, "กำไร": by_eps}
-    if by_fcf is not None:
-        parts["กระแสเงินสด"] = by_fcf
-
-    stack = pd.DataFrame(parts)
-    stack = stack.where(np.isfinite(stack) & (stack > 0))
-
-    out["มูลค่าพื้นฐาน (เร็ว)"] = stack.median(axis=1, skipna=True)
-    out["จำนวนวิธีที่ใช้ได้"] = stack.notna().sum(axis=1)
-    out["วิธีที่ใช้"] = [" + ".join(stack.columns[r.notna()]) if r.notna().any() else ""
-                        for _, r in stack.iterrows()]
-
-    fair = out["มูลค่าพื้นฐาน (เร็ว)"]
-    out["ส่วนต่างจากมูลค่า (%)"] = ((1 - price / fair) * 100).where(fair > 0)
-
-    # วิธีเดียวที่คำนวณได้ = เชื่อถือได้น้อย ควรให้ผู้ใช้เห็นว่าเปราะแค่ไหน
-    out.loc[out["จำนวนวิธีที่ใช้ได้"] < 1, "มูลค่าพื้นฐาน (เร็ว)"] = np.nan
-    return out
+    keep = ["ticker"] + [c for c in GROWTH_COLS if c in growth.columns]
+    return df.merge(growth[keep], on="ticker", how="left")
 
 
 # อัตราส่วนที่ค่าติดลบ "ไม่ได้แปลว่าถูก"
