@@ -106,7 +106,7 @@ def quick_one(ticker: str) -> dict:
     return row
 
 
-def quick_screen(tickers, workers=8, progress=None, retries=2) -> pd.DataFrame:
+def quick_screen(tickers, workers=6, progress=None, retries=3) -> pd.DataFrame:
     """
     คัดกรองเร็วหลายตัวพร้อมกัน
 
@@ -140,15 +140,22 @@ def quick_screen(tickers, workers=8, progress=None, retries=2) -> pd.DataFrame:
     total = len(tickers)
     rows = _pass(list(tickers), workers, 0, total)
 
-    # รอบซ้ำ : เอาเฉพาะตัวที่ยังไม่สำเร็จ ลดจำนวนเส้นลงครึ่งหนึ่งเพื่อไม่ให้โดนบล็อกอีก
+    # รอบซ้ำ : เอาเฉพาะตัวที่ยังไม่สำเร็จ
+    # แต่ละรอบ **ลดจำนวนเส้นลงครึ่งหนึ่งและรอนานขึ้น**
+    # เพราะสาเหตุที่พลาดคือยิงถี่เกินไป ถ้ายิงแรงเท่าเดิมก็จะพลาดซ้ำ
+    n_workers = workers
     for r in range(retries):
         failed = [x["ticker"] for x in rows if x.get("ปัญหา")]
         if not failed:
             break
+        n_workers = max(2, n_workers // 2)
+        wait = 3.0 * (r + 1)
         if progress:
-            progress(total, total, f"ลองซ้ำรอบ {r+1} ({len(failed):,} ตัวที่ยังไม่สำเร็จ)")
-        time.sleep(1.5)
-        fixed = {x["ticker"]: x for x in _pass(failed, max(2, workers // 2), total, total)}
+            progress(total, total,
+                     f"ลองซ้ำรอบ {r+1}/{retries} — {len(failed):,} ตัว "
+                     f"(ใช้ {n_workers} เส้น รอ {wait:.0f} วิ)")
+        time.sleep(wait)
+        fixed = {x["ticker"]: x for x in _pass(failed, n_workers, total, total)}
         rows = [fixed.get(x["ticker"], x) if x.get("ปัญหา") else x for x in rows]
 
     df = pd.DataFrame(rows)
@@ -161,6 +168,45 @@ def quick_screen(tickers, workers=8, progress=None, retries=2) -> pd.DataFrame:
     df.attrs["ทั้งหมด"] = len(df)
     df.attrs["อัตราสำเร็จ (%)"] = round(ok / len(df) * 100, 1) if len(df) else 0.0
     return df
+
+
+# เพดานที่ถือว่า "ผิดปกติจนเชื่อไม่ได้"
+# FCF Yield เกิน 100% แปลว่ากระแสเงินสดอิสระมากกว่ามูลค่าตลาดทั้งบริษัทใน 1 ปี
+# ซึ่งแทบเป็นไปไม่ได้ในเชิงธุรกิจ มักเกิดจากมูลค่าตลาดยุบจนเหลือนิดเดียว
+# หรือมีรายการพิเศษครั้งเดียว (เช่น ขายสินทรัพย์ก้อนใหญ่)
+ABSURD_FCF_YIELD = 100.0
+DEFAULT_MIN_MCAP = 1000.0          # ล้าน — ตัดหุ้นเล็กมากที่ตัวเลขผันผวนสุดขั้ว
+
+
+def basic_quality(df, min_mcap=DEFAULT_MIN_MCAP) -> pd.DataFrame:
+    """
+    ตัด "หุ้นที่ตัวเลขดูดีเพราะกิจการพัง" ออกก่อนคัดกรองจริง
+
+    ทำไมต้องมี — นี่คือกับดักคลาสสิกของระบบคัดกรองหุ้น
+    ------------------------------------------------------
+    อัตราส่วนคำนวณจาก เศษ ÷ ส่วน ถ้า "ส่วน" ยุบลงมาก อัตราส่วนจะดูสวยผิดปกติ
+    ตัวอย่างจริงที่พบ : หุ้นราคา 5 สตางค์ มูลค่าตลาดเหลือ 500 ล้าน
+    ได้ FCF Yield 1,642% ทั้งที่ขาดทุน −68% และส่วนของผู้ถือหุ้นติดลบ
+
+    เกณฑ์ที่ใช้ตัด
+      • ขาดทุนสุทธิ (อัตรากำไรสุทธิติดลบ)
+      • ส่วนของผู้ถือหุ้นติดลบ (P/BV ≤ 0)
+      • มูลค่าตลาดต่ำกว่าที่กำหนด
+      • FCF Yield สูงเกินจริง (> 100%)
+    """
+    if df.empty:
+        return df
+    m = df["ปัญหา"].eq("")
+    nm = pd.to_numeric(df.get("อัตรากำไรสุทธิ (%)"), errors="coerce")
+    pbv = pd.to_numeric(df.get("P/BV"), errors="coerce")
+    cap = pd.to_numeric(df.get("มูลค่าตลาด (ล้าน)"), errors="coerce")
+    fcy = pd.to_numeric(df.get("FCF Yield (%)"), errors="coerce")
+
+    m &= nm.isna() | (nm > 0)          # ไม่มีข้อมูลยังผ่าน แต่ถ้ารู้ว่าขาดทุนให้ตัด
+    m &= pbv.isna() | (pbv > 0)        # ส่วนทุนติดลบ = ตัด
+    m &= cap.isna() | (cap >= min_mcap)
+    m &= fcy.isna() | (fcy.abs() <= ABSURD_FCF_YIELD)
+    return df[m].reset_index(drop=True)
 
 
 def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,

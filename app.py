@@ -320,7 +320,7 @@ except Exception:
 # โหมดคัดกรองทั้งตลาด (ชั้นที่ 1 — เร็ว)
 # ---------------------------------------------------------------------------
 if MODE.startswith("คัดกรอง"):
-    from screener import preset, quick_filter, quick_screen
+    from screener import basic_quality, preset, quick_filter, quick_screen
 
     st.info("**ชั้นคัดกรองเร็ว** — ดึงเฉพาะตัวเลขสรุป (P/E, P/BV, ROE) "
             "ไม่ทำ DCF จึงเร็วกว่าราว 20 เท่า ใช้ได้กับทั้งตลาด\n\n"
@@ -365,6 +365,18 @@ if MODE.startswith("คัดกรอง"):
         universe = full[:cap] if cap else full
         st.caption(f"จะคัดกรอง {len(universe):,} ตัว")
 
+    qa1, qa2 = st.columns([3, 1])
+    with qa1:
+        quality = st.checkbox(
+            "🛡️ ตัดหุ้นที่ตัวเลขดูดีเพราะกิจการพัง (แนะนำให้เปิดไว้)", value=True,
+            help="ตัดบริษัทที่ขาดทุน · ส่วนของผู้ถือหุ้นติดลบ · มูลค่าตลาดเล็กเกินไป "
+                 "· FCF Yield สูงเกินจริง (>100%)\n\n"
+                 "อัตราส่วนคำนวณจาก เศษ ÷ ส่วน ถ้า 'ส่วน' ยุบลงมาก "
+                 "อัตราส่วนจะดูสวยผิดปกติทั้งที่กิจการกำลังแย่")
+    with qa2:
+        q_cap = st.number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e6, 1000.0, 250.0,
+                                disabled=not quality)
+
     st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
     g = st.columns(9)
     f_pe = g[0].number_input("P/E ไม่เกิน", 0.0, 200.0, 0.0, 1.0)
@@ -404,7 +416,8 @@ if MODE.startswith("คัดกรอง"):
     qdf = st.session_state.get("quick_df")
     if qdf is not None and not qdf.empty:
         got = qdf[qdf["ปัญหา"].eq("")]
-        res = quick_filter(qdf, max_pe=f_pe or None, max_pbv=f_pbv or None,
+        base = basic_quality(qdf, min_mcap=q_cap) if quality else qdf
+        res = quick_filter(base, max_pe=f_pe or None, max_pbv=f_pbv or None,
                            min_roe=f_roe or None, min_fcf_yield=f_fcf or None,
                            min_div=f_div or None, min_mcap=f_cap or None,
                            max_de=f_de or None, min_gross_margin=f_gm or None,
@@ -462,12 +475,16 @@ if MODE.startswith("คัดกรอง"):
             res = (res.assign(_k=key)
                       .sort_values("_k", ascending=asc, na_position="last")
                       .drop(columns="_k").reset_index(drop=True))
-        k = st.columns(3)
-        metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}")
-        metric_card(k[1], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
+        k = st.columns(4)
+        rate = len(got) / len(qdf) * 100 if len(qdf) else 0
+        metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}",
+                    f"{rate:.0f}%", "#2e7d32" if rate >= 85 else "#ef6c00")
+        metric_card(k[1], "ผ่านคุณภาพขั้นต่ำ",
+                    f"{len(base):,} ตัว" if quality else "ไม่ได้กรอง")
+        metric_card(k[2], "ผ่านเกณฑ์", f"{len(res):,} ตัว")
         pe_pos = pd.to_numeric(res.get("P/E"), errors="coerce")
         pe_pos = pe_pos[pe_pos > 0] if pe_pos is not None else pd.Series(dtype=float)
-        metric_card(k[2], "P/E ต่ำสุดที่ผ่าน",
+        metric_card(k[3], "P/E ต่ำสุดที่ผ่าน",
                     f"{pe_pos.min():,.1f}" if len(pe_pos) else "—")
 
         if res.empty:
