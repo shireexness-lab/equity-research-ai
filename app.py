@@ -114,6 +114,11 @@ def apply_theme(name: str):
   a.tk {{ color:{c['pri']} !important; font-weight:700; text-decoration:none;
          border-bottom:1px dashed {c['pri']}; }}
   a.tk:hover {{ opacity:.75; }}
+  /* หัวตารางที่กดเพื่อจัดเรียงได้ */
+  a.sh {{ color:{c['txt']} !important; text-decoration:none; cursor:pointer;
+         white-space:nowrap; }}
+  a.sh:hover {{ color:{c['pri']} !important; }}
+  a.sh.cur {{ color:{c['pri']} !important; font-weight:700; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -184,22 +189,37 @@ def _cell(x, dec=2):
 
 
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
-               max_height=None, link_cols=()):
+               max_height=None, link_cols=(), sort_cols=(),
+               cur_sort=None, cur_asc=True):
     """
     แสดง DataFrame เป็นตาราง HTML
 
     max_height : ถ้าใส่ (เช่น 520) ตารางจะสูงไม่เกินนั้นแล้ว **เลื่อนลงดูได้**
                  พร้อมตรึงหัวตารางไว้ด้านบน — ใช้กับรายการหุ้นยาว ๆ
+    sort_cols  : ชื่อคอลัมน์ที่ "กดหัวตารางแล้วเรียงได้"
+                 ▲ = เรียงน้อยไปมาก · ▼ = มากไปน้อย · ⇅ = กดเพื่อเรียง
     link_cols  : ชื่อคอลัมน์ที่จะทำเป็นลิงก์กดได้ (เช่น "ticker")
                  กดแล้วจะพาไปวิเคราะห์รายตัวของหุ้นตัวนั้น
                  กลไก : ลิงก์ใส่พารามิเตอร์ ?t=AAPL ต่อท้าย URL
                         แอปอ่านค่านี้ตอนโหลดใหม่แล้วสลับโหมดให้เอง
     """
+    from urllib.parse import quote
     cols = [str(c)[:4] if trim_year else str(c) for c in df.columns]
     style = f" style='max-height:{max_height}px;overflow-y:auto'" if max_height else ""
     h = [f"<div class='tw'{style}><table class='t'><thead><tr>"
          f"<th class='l'>{first_col}</th>"]
-    h += [f"<th>{c}</th>" for c in cols]
+    for c in cols:
+        if c in sort_cols:
+            # กดหัวตาราง = ส่ง ?sort=<คอลัมน์>&order=... กลับมาที่แอป
+            # กดคอลัมน์เดิมซ้ำ = สลับทิศทางการเรียง
+            is_cur = (c == cur_sort)
+            nxt = "desc" if (is_cur and cur_asc) else "asc"
+            arrow = (" ▲" if cur_asc else " ▼") if is_cur else " ⇅"
+            cls = "sh cur" if is_cur else "sh"
+            h.append(f"<th><a class='{cls}' target='_self' "
+                     f"href='?sort={quote(str(c))}&order={nxt}'>{c}{arrow}</a></th>")
+        else:
+            h.append(f"<th>{c}</th>")
     h.append("</tr></thead><tbody>")
     for name in df.index:
         h.append(f"<tr><td class='l'>{name}</td>")
@@ -262,6 +282,14 @@ if "t" in _qp:
     st.session_state["mode"] = MODES[0]
     st.session_state["jump"] = str(_qp["t"]).strip().upper()
     st.session_state["ran"] = True
+    st.query_params.clear()
+elif "sort" in _qp:
+    # กดหัวตารางเพื่อจัดเรียง — เก็บลง session แล้วล้าง URL
+    from urllib.parse import unquote
+    st.session_state["sort_col"] = unquote(str(_qp["sort"]))
+    st.session_state["sort_dir"] = ("น้อย → มาก"
+                                    if str(_qp.get("order", "asc")) == "asc"
+                                    else "มาก → น้อย")
     st.query_params.clear()
 
 if "mode" not in st.session_state:
@@ -333,7 +361,7 @@ if MODE.startswith("คัดกรอง"):
         st.caption(f"จะคัดกรอง {len(universe):,} ตัว")
 
     st.markdown("**เกณฑ์คัดกรอง** (ปล่อยเป็น 0 = ไม่ใช้เกณฑ์นั้น)")
-    g = st.columns(7)
+    g = st.columns(9)
     f_pe = g[0].number_input("P/E ไม่เกิน", 0.0, 200.0, 0.0, 1.0)
     f_pbv = g[1].number_input("P/BV ไม่เกิน", 0.0, 50.0, 0.0, 0.5)
     f_roe = g[2].number_input("ROE ขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0)
@@ -342,7 +370,11 @@ if MODE.startswith("คัดกรอง"):
     f_de = g[5].number_input("D/E ไม่เกิน (เท่า)", 0.0, 20.0, 0.0, 0.25,
                              help="หนี้สินรวม ÷ ส่วนของผู้ถือหุ้น "
                                   "ยิ่งต่ำยิ่งปลอดภัย · ธนาคารจะสูงเป็นปกติ")
-    f_cap = g[6].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
+    f_gm = g[6].number_input("กำไรขั้นต้นขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0,
+                             help="อัตรากำไรขั้นต้นสูง = สินค้ามีอำนาจตั้งราคา "
+                                  "หรือมีความได้เปรียบด้านต้นทุน")
+    f_nm = g[7].number_input("กำไรสุทธิขั้นต่ำ (%)", 0.0, 100.0, 0.0, 1.0)
+    f_cap = g[8].number_input("มูลค่าตลาดขั้นต่ำ (ล้าน)", 0.0, 1e7, 0.0, 1000.0)
 
     if st.button("เริ่มคัดกรอง", type="primary", use_container_width=True):
         bar, note = st.progress(0.0), st.empty()
@@ -370,25 +402,33 @@ if MODE.startswith("คัดกรอง"):
         res = quick_filter(qdf, max_pe=f_pe or None, max_pbv=f_pbv or None,
                            min_roe=f_roe or None, min_fcf_yield=f_fcf or None,
                            min_div=f_div or None, min_mcap=f_cap or None,
-                           max_de=f_de or None)
+                           max_de=f_de or None, min_gross_margin=f_gm or None,
+                           min_net_margin=f_nm or None)
 
         # ---------- จัดเรียงตามหัวข้อที่เลือก ----------
         # ค่าเริ่มต้นของแต่ละหัวข้อตั้งให้ "ตัวที่น่าสนใจอยู่บน" โดยอัตโนมัติ
         #   P/E, P/BV, P/S, D/E  → น้อยไปมาก (ยิ่งต่ำยิ่งน่าสนใจ)
         #   ROE, FCF Yield, ปันผล, มูลค่าตลาด → มากไปน้อย
         SORTABLE = ["P/E", "P/BV", "P/S", "D/E", "ROE (%)", "FCF Yield (%)",
-                    "ปันผล (%)", "อัตรากำไรสุทธิ (%)", "มูลค่าตลาด (ล้าน)",
-                    "ราคา", "ticker"]
+                    "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)", "ปันผล (%)",
+                    "มูลค่าตลาด (ล้าน)", "ราคา", "ticker"]
         ASC_BY_DEFAULT = {"P/E", "P/BV", "P/S", "D/E", "ticker"}
+        st.session_state.setdefault("sort_col", "P/E")
+        st.session_state.setdefault("sort_dir", "น้อย → มาก")
+        if st.session_state["sort_col"] not in SORTABLE:
+            SORTABLE.append(st.session_state["sort_col"])
         s1, s2 = st.columns([2, 1])
         with s1:
-            sort_col = st.selectbox("จัดเรียงตาม", SORTABLE, index=0)
+            sort_col = st.selectbox("จัดเรียงตาม", SORTABLE, key="sort_col")
         with s2:
             order = st.radio("ลำดับ", ["น้อย → มาก", "มาก → น้อย"],
-                             index=0 if sort_col in ASC_BY_DEFAULT else 1,
-                             horizontal=True, label_visibility="collapsed")
+                             key="sort_dir", horizontal=True,
+                             label_visibility="collapsed")
+        st.caption("💡 กดที่ **หัวตาราง** ด้านล่างเพื่อจัดเรียงได้เลย "
+                   "· กดคอลัมน์เดิมซ้ำเพื่อสลับทิศทาง")
+        asc = order.startswith("น้อย")
         if sort_col in res.columns:
-            res = res.sort_values(sort_col, ascending=(order.startswith("น้อย")),
+            res = res.sort_values(sort_col, ascending=asc,
                                   na_position="last").reset_index(drop=True)
         k = st.columns(3)
         metric_card(k[0], "ดึงข้อมูลได้", f"{len(got):,} / {len(qdf):,}")
@@ -400,14 +440,15 @@ if MODE.startswith("คัดกรอง"):
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
         else:
             cols = ["ticker", "ชื่อบริษัท", "ราคา", "P/E", "P/BV", "P/S", "D/E",
-                    "ROE (%)", "อัตรากำไรสุทธิ (%)", "FCF Yield (%)", "ปันผล (%)",
-                    "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
+                    "ROE (%)", "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)",
+                    "FCF Yield (%)", "ปันผล (%)", "มูลค่าตลาด (ล้าน)", "กลุ่ม"]
             show = res[[c for c in cols if c in res.columns]].head(200).copy()
             show.index = [str(i) for i in range(1, len(show) + 1)]
             # หุ้นเป็น "แถว" (ไม่ใส่ .T) จึงเลื่อนลงดูตัวถัดไปได้ตามปกติ
             # link_cols = ทำชื่อหุ้นให้กดได้ → เด้งไปวิเคราะห์รายตัวทันที
             html_table(show, first_col="อันดับ", trim_year=False,
-                       max_height=560, link_cols=("ticker",))
+                       max_height=560, link_cols=("ticker",),
+                       sort_cols=SORTABLE, cur_sort=sort_col, cur_asc=asc)
             st.caption(f"เรียงตาม **{sort_col}** ({order}) · "
                        f"แสดง {len(show):,} อันดับแรกจาก {len(res):,} ตัวที่ผ่านเกณฑ์ "
                        "· **กดที่ชื่อหุ้น** เพื่อดูการวิเคราะห์รายตัวทันที "
@@ -429,9 +470,9 @@ if MODE.startswith("คัดกรอง"):
                                  1, n_pages, 1, 1)
             page = res.iloc[(pg - 1) * PER_PAGE: pg * PER_PAGE]
 
-            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "ราคา", "P/E", "P/BV",
-                     "D/E", "ROE (%)", "FCF Y (%)"]
-            WIDTHS = [0.6, 1.4, 2.8, 1.0, 0.9, 0.9, 0.9, 1.1, 1.1]
+            HEADS = ["เลือก", "หุ้น", "ชื่อบริษัท", "P/E", "P/BV", "D/E",
+                     "ROE %", "GM %", "NM %"]
+            WIDTHS = [0.6, 1.4, 2.6, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0]
             hd = st.columns(WIDTHS)
             for col, txt in zip(hd, HEADS):
                 col.markdown(f"<span class='muted'><b>{txt}</b></span>",
@@ -446,12 +487,12 @@ if MODE.startswith("คัดกรอง"):
                 cc[1].markdown(f"<a class='tk' target='_self' href='?t={t}'>{t}</a>",
                                unsafe_allow_html=True)
                 cc[2].caption(str(r["ชื่อบริษัท"])[:34])
-                cc[3].caption(_cell(r["ราคา"]))
-                cc[4].caption(_cell(r.get("P/E"), 1))
-                cc[5].caption(_cell(r.get("P/BV"), 2))
-                cc[6].caption(_cell(r.get("D/E"), 2))
-                cc[7].caption(_cell(r.get("ROE (%)"), 1))
-                cc[8].caption(_cell(r.get("FCF Yield (%)"), 1))
+                cc[3].caption(_cell(r.get("P/E"), 1))
+                cc[4].caption(_cell(r.get("P/BV"), 2))
+                cc[5].caption(_cell(r.get("D/E"), 2))
+                cc[6].caption(_cell(r.get("ROE (%)"), 1))
+                cc[7].caption(_cell(r.get("อัตรากำไรขั้นต้น (%)"), 1))
+                cc[8].caption(_cell(r.get("อัตรากำไรสุทธิ (%)"), 1))
 
             sel = [t for t in res["ticker"] if t in picked]
             st.markdown(f"**เลือกไว้ {len(sel)} ตัว** "

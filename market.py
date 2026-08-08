@@ -48,6 +48,7 @@ METRICS = [
     ("รายได้", "duration", "us-gaap", "USD",
      ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"]),
     ("กำไรสุทธิ", "duration", "us-gaap", "USD", ["NetIncomeLoss"]),
+    ("กำไรขั้นต้น", "duration", "us-gaap", "USD", ["GrossProfit"]),
     ("OCF", "duration", "us-gaap", "USD",
      ["NetCashProvidedByUsedInOperatingActivities"]),
     ("CapEx", "duration", "us-gaap", "USD",
@@ -218,6 +219,7 @@ def us_market_snapshot(progress=None) -> pd.DataFrame:
     rev = pd.to_numeric(fund.get("รายได้"), errors="coerce")
     ocf = pd.to_numeric(fund.get("OCF"), errors="coerce")
     capex = pd.to_numeric(fund.get("CapEx"), errors="coerce").abs()
+    gp = pd.to_numeric(fund.get("กำไรขั้นต้น"), errors="coerce")
     assets = pd.to_numeric(fund.get("สินทรัพย์รวม"), errors="coerce")
     liab = pd.to_numeric(fund.get("หนี้สินรวม"), errors="coerce")
 
@@ -237,6 +239,7 @@ def us_market_snapshot(progress=None) -> pd.DataFrame:
         "P/BV": div(mcap, eq),
         "P/S": div(mcap, rev),
         "ROE (%)": div(ni, eq) * 100,
+        "อัตรากำไรขั้นต้น (%)": div(gp, rev) * 100,
         "อัตรากำไรสุทธิ (%)": div(ni, rev) * 100,
         "FCF Yield (%)": div(fcf, mcap) * 100,
         "หนี้สิน/สินทรัพย์ (%)": div(liab, assets) * 100,

@@ -50,8 +50,8 @@ ZONE_ORDER = ["Strong Buy", "Buy", "Hold", "Reduce", "Sell"]
 
 QUICK_COLS = ["ticker", "ชื่อบริษัท", "กลุ่ม", "สกุลเงิน", "ราคา",
               "มูลค่าตลาด (ล้าน)", "P/E", "P/BV", "P/S", "EV/EBITDA",
-              "ROE (%)", "อัตรากำไรสุทธิ (%)", "D/E", "ปันผล (%)",
-              "FCF Yield (%)", "โตรายได้ (%)"]
+              "ROE (%)", "อัตรากำไรขั้นต้น (%)", "อัตรากำไรสุทธิ (%)",
+              "D/E", "ปันผล (%)", "FCF Yield (%)", "โตรายได้ (%)"]
 
 
 def _num(x):
@@ -87,6 +87,10 @@ def quick_one(ticker: str) -> dict:
             "EV/EBITDA": _num(info.get("enterpriseToEbitda")),
             "ROE (%)": (_num(info.get("returnOnEquity")) or 0) * 100
                        if info.get("returnOnEquity") is not None else None,
+            # อัตรากำไรขั้นต้น = บอกว่าสินค้า/บริการมีอำนาจตั้งราคาแค่ไหน
+            # อัตรากำไรสุทธิ = เหลือถึงมือผู้ถือหุ้นเท่าไรหลังหักทุกอย่าง
+            "อัตรากำไรขั้นต้น (%)": (_num(info.get("grossMargins")) or 0) * 100
+                                     if info.get("grossMargins") is not None else None,
             "อัตรากำไรสุทธิ (%)": (_num(info.get("profitMargins")) or 0) * 100
                                    if info.get("profitMargins") is not None else None,
             "D/E": (_num(info.get("debtToEquity")) or 0) / 100
@@ -125,7 +129,8 @@ def quick_screen(tickers, workers=8, progress=None) -> pd.DataFrame:
 
 
 def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None,
-                 min_mcap=None, min_div=None, max_de=None) -> pd.DataFrame:
+                 min_mcap=None, min_div=None, max_de=None,
+                 min_gross_margin=None, min_net_margin=None) -> pd.DataFrame:
     """
     กรองผลจากชั้นที่ 1 — ทุกเงื่อนไขไม่ใส่ก็ได้
 
@@ -138,7 +143,9 @@ def quick_filter(df, max_pe=None, max_pbv=None, min_roe=None, min_fcf_yield=None
     checks = [("P/E", max_pe, "le"), ("P/BV", max_pbv, "le"),
               ("ROE (%)", min_roe, "ge"), ("FCF Yield (%)", min_fcf_yield, "ge"),
               ("มูลค่าตลาด (ล้าน)", min_mcap, "ge"), ("ปันผล (%)", min_div, "ge"),
-              ("D/E", max_de, "le")]
+              ("D/E", max_de, "le"),
+              ("อัตรากำไรขั้นต้น (%)", min_gross_margin, "ge"),
+              ("อัตรากำไรสุทธิ (%)", min_net_margin, "ge")]
     for col, val, op in checks:
         if val is None or col not in df.columns:
             continue
