@@ -400,10 +400,15 @@ if MODE.startswith("คัดกรอง"):
             "ไม่ทำ DCF จึงเร็วกว่าราว 20 เท่า ใช้ได้กับทั้งตลาด\n\n"
             "หลังคัดได้แล้ว ให้เอารายชื่อไปวิเคราะห์ลึกในโหมดถัดไป")
 
-    uni = st.radio("ตลาด",
-                   ["🇺🇸 หุ้นสหรัฐทั้งตลาด (เร็ว)", "🇹🇭 หุ้นไทย",
-                    "หุ้นสหรัฐยอดนิยม 39 ตัว"],
-                   horizontal=True)
+    import snapshot as _SNAP
+
+    # ตั้งค่าเริ่มต้นเป็น "ขอบเขตที่คัดกรองล่าสุด" ไม่ใช่ค่าคงที่
+    # เพื่อให้แท็บใหม่ที่เปิดจากการกดชื่อหุ้น กลับมาเจอหน้าเดิมที่ค้างไว้
+    _LASTS = _SNAP.get_last_scope()
+    UNI_OPTS = ["🇺🇸 หุ้นสหรัฐทั้งตลาด (เร็ว)", "🇹🇭 หุ้นไทย",
+                "หุ้นสหรัฐยอดนิยม 39 ตัว"]
+    _uni_idx = UNI_OPTS.index(_LASTS["uni"]) if _LASTS.get("uni") in UNI_OPTS else 0
+    uni = st.radio("ตลาด", UNI_OPTS, index=_uni_idx, horizontal=True)
 
     if uni.startswith("🇺🇸"):
         st.success("**วิธีเร็ว** — ดึงงบการเงินของทุกบริษัทในตลาดจาก SEC "
@@ -418,10 +423,16 @@ if MODE.startswith("คัดกรอง"):
         st.caption(f"ทะเบียนบริษัทจดทะเบียน · {meta.get('ที่มา','-')} "
                    f"· ข้อมูล ณ {meta.get('ข้อมูล ณ','-')} · {meta.get('จำนวน',0):,} รายการ")
         t1, t2, t3 = st.columns([1, 2, 1])
+        MKT_OPTS = ["ทั้งหมด", "SET", "mai"]
+        IND_OPTS = ["ทุกกลุ่ม"] + thai_industries()
         with t1:
-            mkt = st.radio("ตลาด", ["ทั้งหมด", "SET", "mai"], horizontal=True)
+            mkt = st.radio("ตลาด", MKT_OPTS, horizontal=True,
+                           index=(MKT_OPTS.index(_LASTS["mkt"])
+                                  if _LASTS.get("mkt") in MKT_OPTS else 0))
         with t2:
-            ind = st.selectbox("กลุ่มอุตสาหกรรม", ["ทุกกลุ่ม"] + thai_industries())
+            ind = st.selectbox("กลุ่มอุตสาหกรรม", IND_OPTS,
+                               index=(IND_OPTS.index(_LASTS["ind"])
+                                      if _LASTS.get("ind") in IND_OPTS else 0))
         universe = thai_universe(market=None if mkt == "ทั้งหมด" else mkt,
                                  industry=None if ind == "ทุกกลุ่ม" else ind)
         with t3:
@@ -445,6 +456,10 @@ if MODE.startswith("คัดกรอง"):
     snap_key = key if bulk else f"{key}-{len(universe)}"
     if key == "thai":
         snap_key = f"thai-{mkt}-{ind}-{len(universe)}"
+
+    # จำขอบเขตล่าสุดไว้ให้แท็บอื่นเปิดมาเจอหน้าเดิม
+    _SNAP.set_last_scope({"uni": uni, "key": key, "snap_key": snap_key,
+                          **({"mkt": mkt, "ind": ind} if key == "thai" else {})})
 
     qa1, qa2 = st.columns([2, 1])
     with qa1:
@@ -562,6 +577,29 @@ if MODE.startswith("คัดกรอง"):
         st.session_state["quick_df"] = _saved
         st.caption(f"ใช้ข้อมูลที่บันทึกไว้เมื่อ {_smeta.get('บันทึกเมื่อ','-')} "
                    f"· จาก**{_smeta.get('ที่มา (ไทย)','-')}**")
+
+    # ---------- กู้ผลคัดกรองอัตโนมัติ ----------
+    # ปัญหาที่แก้ : กดชื่อหุ้นในตาราง -> เปิดแท็บใหม่ -> แท็บนั้นเป็น session ใหม่
+    # ที่ไม่มีผลคัดกรองเลย พอสลับกลับมาโหมดคัดกรองจึงเจอหน้าว่าง
+    # และต้องรอดึงข้อมูลใหม่ 5-10 นาทีทั้งที่เพิ่งดึงไปเมื่อครู่
+    #
+    # แก้โดยดึงจากที่บันทึกไว้ให้เองเมื่อ session ยังไม่มีข้อมูล
+    # ปลอดภัยเพราะทุกครั้งที่ดึงข้อมูลสำเร็จ ระบบบันทึกไว้อยู่แล้ว
+    if (st.session_state.get("quick_df") is None and _saved is not None
+            and not run_fresh):
+        st.session_state["quick_df"] = _saved
+        st.session_state["auto_restored"] = _smeta
+
+    _ar = st.session_state.pop("auto_restored", None)
+    if _ar:
+        age = _ar.get("อายุ (ชม.)", 0)
+        age_txt = f"{age:.0f} ชม.ที่แล้ว" if age >= 1 else "เมื่อสักครู่"
+        st.success(
+            f"↩️ **กู้ผลคัดกรองที่ทำไว้กลับมาให้แล้ว** "
+            f"({_ar.get('จำนวนแถว',0):,} ตัว · ดึงเมื่อ {age_txt} · "
+            f"จาก{_ar.get('ที่มา (ไทย)','-')})  \n"
+            "ไม่ต้องคัดกรองใหม่ — กด **เริ่มคัดกรอง (ดึงข้อมูลใหม่)** "
+            "เฉพาะเมื่อต้องการราคาล่าสุด")
 
     if run_fresh:
         bar, note = st.progress(0.0), st.empty()
@@ -1244,6 +1282,22 @@ if MODE.startswith("วิเคราะห์ลึก"):
 JUMP = st.session_state.pop("jump", None)
 if JUMP:
     st.success(f"เปิดจากตารางคัดกรอง : **{JUMP}**")
+
+# ---------- ปุ่มกลับไปหน้าคัดกรอง ----------
+# เห็นได้ตลอด ไม่ใช่เฉพาะตอนกดมาจากตาราง เพราะแท็บที่เปิดจากลิงก์
+# เป็น session ใหม่ที่ไม่รู้ว่าตัวเองมาจากไหน
+# ผลคัดกรองจะถูกกู้กลับมาให้เองจากที่บันทึกไว้ ไม่ต้องดึงใหม่
+try:
+    import snapshot as _SNAP2
+    _last_scope = _SNAP2.get_last_scope()
+except Exception:
+    _last_scope = {}
+if _last_scope.get("snap_key"):
+    _bk = st.columns([1, 3])
+    _bk[0].button("↩️ กลับไปหน้าคัดกรอง", use_container_width=True,
+                  on_click=lambda: st.session_state.update({"mode": MODES[1]}))
+    _bk[1].caption(f"ผลคัดกรองล่าสุด **{_last_scope['snap_key']}** "
+                   "ถูกบันทึกไว้แล้ว — กดกลับไปได้เลย ไม่ต้องคัดกรองใหม่")
 
 manual = st.toggle("พิมพ์ ticker เอง (สำหรับหุ้นที่ไม่มีในรายชื่อ)",
                    value=bool(JUMP) or not OPTIONS,
