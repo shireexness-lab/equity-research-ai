@@ -91,6 +91,24 @@ def _unpack(raw: bytes):
     head, _, body = txt.partition("\n")
     meta = json.loads(head)
     df = pd.read_csv(io.StringIO(body))
+
+    # ---- คืนสภาพคอลัมน์ข้อความ ----
+    # CSV ไม่แยกระหว่าง "ข้อความว่าง" กับ "ไม่มีค่า" — ทั้งคู่เขียนออกมาเป็นช่องว่าง
+    # ตอนอ่านกลับ pandas จึงแปลงเป็น NaN ทั้งหมด
+    #
+    # ทำไมเรื่องนี้สำคัญมาก : คอลัมน์ "ปัญหา" ใช้ค่าว่าง "" แปลว่า "ดึงข้อมูลสำเร็จ"
+    # ถ้ากลายเป็น NaN เงื่อนไข df["ปัญหา"] == "" จะเป็นเท็จทุกแถว
+    # ผลคือหุ้นที่ดึงสำเร็จ 807 ตัวถูกนับเป็น 0 ตัว — ตารางว่างเปล่าทั้งที่ข้อมูลครบ
+    text_cols = meta.get("คอลัมน์ข้อความ")
+    if text_cols is None:                       # ไฟล์เก่าที่บันทึกก่อนแก้บั๊กนี้
+        text_cols = [c for c in df.columns
+                     if df[c].dtype == object and df[c].notna().any()]
+        for c in ("ปัญหา", "ชื่อบริษัท", "กลุ่ม", "⚠️"):
+            if c in df.columns and c not in text_cols:
+                text_cols.append(c)
+    for c in text_cols:
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str)
     return df, meta
 
 
@@ -290,10 +308,23 @@ def save(name: str, df: pd.DataFrame, extra: dict = None) -> dict:
     if df is None or df.empty:
         return {"local": False, "drive": False}
 
+    # จำไว้ว่าคอลัมน์ไหนเป็นข้อความ เพื่อคืนค่าว่างให้ถูกตอนอ่านกลับ (ดู _unpack)
+    #
+    # ต้องเช็กว่า "มีข้อความจริงอย่างน้อย 1 ช่อง" ไม่ใช่ดูแค่ dtype
+    # เพราะคอลัมน์ตัวเลขที่ดึงไม่ได้เลยสักตัว (เช่น EV/EBITDA ของหุ้นไทย)
+    # pandas จะให้ dtype เป็น object ทั้งที่ควรเป็นตัวเลข
+    # ถ้าเหมาว่าเป็นข้อความ ค่าว่างจะกลายเป็น "" แล้วคำนวณต่อไม่ได้
+    def _is_text(s):
+        v = s.dropna()
+        return len(v) > 0 and isinstance(v.iloc[0], str)
+
+    text_cols = [c for c in df.columns if _is_text(df[c])]
+
     meta = {"ชื่อชุดข้อมูล": name,
             "บันทึกเมื่อ": _now(),
             "จำนวนแถว": int(len(df)),
-            "คอลัมน์": list(df.columns)}
+            "คอลัมน์": list(df.columns),
+            "คอลัมน์ข้อความ": text_cols}
     if extra:
         meta.update(extra)
 
