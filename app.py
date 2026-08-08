@@ -95,7 +95,11 @@ def apply_theme(name: str):
   [data-testid="stTabs"] button p {{ color:{c['txt']}; }}
 
   /* ส่วนประกอบที่เราสร้างเอง */
-  .block-container {{ padding-top:1.2rem; max-width:1200px; }}
+  /* พื้นที่แสดงผล — ใช้ความกว้างจอเกือบเต็ม เพื่อให้ตารางหลายคอลัมน์อ่านได้ในหน้าเดียว
+     min() = เอาค่าที่น้อยกว่าระหว่าง 97% ของจอ กับ 1900px
+     (กันไม่ให้ยืดเกินไปบนจอกว้างมากจนตาต้องกวาดไกล) */
+  .block-container {{ padding-top:1.2rem; padding-left:1.2rem; padding-right:1.2rem;
+                     max-width:min(97vw, 1900px) !important; }}
   .zone {{ display:inline-block; padding:.4rem 1.4rem; border-radius:.5rem;
           color:#fff !important; font-size:1.4rem; font-weight:700; }}
   .zone * {{ color:#fff !important; }}
