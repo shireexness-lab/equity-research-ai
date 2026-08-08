@@ -1073,13 +1073,27 @@ if MODE.startswith("วิเคราะห์ลึก"):
         ok = df[df["ปัญหา"].eq("")]
         under = undervalued(df, min_disc, min_score)
         k = st.columns(3)
-        metric_card(k[0], "วิเคราะห์สำเร็จ", f"{len(ok)} / {len(df)}")
+        rate = len(ok) / len(df) * 100 if len(df) else 0
+        metric_card(k[0], "วิเคราะห์สำเร็จ", f"{len(ok)} / {len(df)}",
+                    f"{rate:.0f}%", "#2e7d32" if rate >= 60 else "#c62828")
         metric_card(k[1], "ราคาต่ำกว่ามูลค่า", f"{len(under)} ตัว")
-        best = under["ส่วนลด (%)"].max() if not under.empty else None
+        best = (pd.to_numeric(under["ส่วนลด (%)"], errors="coerce").max()
+                if ("ส่วนลด (%)" in under.columns and not under.empty) else None)
         metric_card(k[2], "ส่วนลดสูงสุด",
-                    f"{best:,.0f}%" if best is not None else "—")
+                    f"{best:,.0f}%" if best is not None and pd.notna(best) else "—")
 
-        if under.empty:
+        # ---- ไม่สำเร็จสักตัว ต้องบอกสาเหตุทันที ไม่ใช่ให้ไปหาเองในกล่องพับ ----
+        if ok.empty:
+            errs = df["ปัญหา"].value_counts()
+            st.error(
+                f"**วิเคราะห์ไม่สำเร็จทั้ง {len(df)} ตัว**\n\n"
+                + "\n".join(f"- **{n} ตัว** — `{m}`" for m, n in errs.head(5).items())
+                + "\n\n**ถ้าเจอ `429` หรือ `Too Many Requests`** = Yahoo ปฏิเสธคำขอ "
+                  "ซึ่งเกิดกับเครื่องในศูนย์ข้อมูล (รวม Streamlit Cloud) "
+                  "ชั้นวิเคราะห์ลึกต้องดึงงบการเงินเต็ม จึงโดนบล็อกง่ายกว่าชั้นคัดกรองมาก\n\n"
+                  "วิธีที่ได้ผลแน่นอนคือรันบน MacBook:\n\n"
+                  "```\neq\npython3 screener.py --scan CMR.BK KCC.BK SRICHA.BK\n```")
+        elif under.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ที่ตั้งไว้ — ลองลดส่วนลดขั้นต่ำลง")
         else:
             DEEP_SORT = ["ส่วนลด (%)", "คะแนน", "ROE เฉลี่ย (%)", "D/E",
