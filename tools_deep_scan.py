@@ -124,21 +124,36 @@ def run(tickers, market: str, rf=None, save_every=10):
     """
     key = DEEP_KEY.format(market=market)
     done, meta = snapshot.info(key)
-    have = {}
+    have, n_fail_before = {}, 0
     if done is not None and not done.empty and "ticker" in done.columns:
         # เก็บเฉพาะตัวที่สำเร็จ ตัวที่พังให้ลองใหม่
         ok = done[done["ปัญหา"].eq("")] if "ปัญหา" in done.columns else done
         have = {r["ticker"]: r.to_dict() for _, r in ok.iterrows()}
-        print(f"  พบผลเดิม {len(have):,} ตัว — จะข้ามตัวเหล่านั้น")
+        n_fail_before = len(done) - len(ok)
 
+    tickers = list(dict.fromkeys(tickers))     # กันชื่อซ้ำ
     todo = [t for t in tickers if t not in have]
+    reuse = len(tickers) - len(todo)
+
+    # ---- สรุปให้ชัดว่าเลขแต่ละตัวมาจากไหน ----
+    # เดิมแสดงแค่ "ต้องวิเคราะห์อีก N ตัว" ซึ่งอ่านแล้วนึกว่าทั้งหมดมีแค่ N
+    # ทั้งที่ N คือส่วนที่เหลือหลังหักตัวที่เคยทำไว้แล้ว
+    print(f"\n  {'รายชื่อทั้งหมด':<28}{len(tickers):>7,} ตัว")
+    print(f"  {'เคยวิเคราะห์สำเร็จแล้ว':<28}{reuse:>7,} ตัว   (จะข้าม ไม่ทำซ้ำ)")
+    if n_fail_before:
+        print(f"  {'เคยพลาด จะลองใหม่':<28}{n_fail_before:>7,} ตัว")
+    print(f"  {'ต้องวิเคราะห์รอบนี้':<28}{len(todo):>7,} ตัว")
+    print(f"  {'':>28}{'':>7}     รวมเมื่อเสร็จ = {len(tickers):,} ตัว")
+
     if not todo:
-        print("  ทำครบทุกตัวแล้ว ไม่มีอะไรต้องรันเพิ่ม")
+        print("\n  ทำครบทุกตัวแล้ว ไม่มีอะไรต้องรันเพิ่ม")
+        print("  ถ้าต้องการวิเคราะห์ใหม่ทั้งหมด ให้ลบไฟล์ผลเก่าก่อน :")
+        print(f"    rm cache/snapshots/{snapshot._fname(key)}")
+        print(f"    rm data/snapshots/{snapshot._fname(key)}")
         return pd.DataFrame(list(have.values()))
 
     total, t0 = len(todo), time.time()
-    print(f"  ต้องวิเคราะห์อีก {total:,} ตัว "
-          f"— คาดว่าราว {total * 30 / 3600:.1f} ชั่วโมง\n")
+    print(f"\n  คาดว่าใช้เวลาราว {total * 30 / 3600:.1f} ชั่วโมง\n")
 
     rows = list(have.values())
     for i, tk in enumerate(todo, 1):
@@ -173,6 +188,42 @@ def load_results(market: str):
 
 ORDER = ["Strong Buy", "Buy", "Accumulate", "Hold", "Reduce", "Sell"]
 
+# ส่วนลดที่สูงจนไม่น่าเชื่อ
+#
+# ส่วนลด 100% แปลว่ามูลค่าที่ประเมินได้เป็น 2 เท่าของราคา
+# ส่วนลด 300% แปลว่าเป็น 4 เท่า — ตลาดทั้งตลาดคงไม่พลาดขนาดนั้นพร้อมกัน
+# เมื่อเห็นตัวเลขแบบนี้ สาเหตุที่เป็นไปได้มากกว่าคือ **โมเดลของเราเพี้ยน**
+# ซึ่งเกิดจากข้อมูลย้อนหลังสั้นเกินไปจนต่อแนวโน้มผิด
+ABSURD_DISCOUNT = 100.0
+
+
+def diagnose(df: pd.DataFrame) -> dict:
+    """
+    ตรวจสุขภาพของผลวิเคราะห์ทั้งชุด
+
+    ทำไมต้องมี : ถ้าหุ้นครึ่งตลาดขึ้นว่า "ถูกกว่ามูลค่า 300%"
+    สิ่งที่ควรสงสัยคือโมเดล ไม่ใช่ตลาด
+    """
+    if df is None or df.empty:
+        return {}
+    ok = df[df["ปัญหา"].eq("")] if "ปัญหา" in df.columns else df
+    if ok.empty:
+        return {}
+    d = pd.to_numeric(ok.get("ส่วนลด (%)"), errors="coerce")
+    yr = pd.to_numeric(ok.get("ปีข้อมูล"), errors="coerce")
+    rel = pd.to_numeric(ok.get("คะแนนความน่าเชื่อถือ"), errors="coerce")
+    sc = pd.to_numeric(ok.get("คะแนนรวม"), errors="coerce")
+    return {
+        "วิเคราะห์สำเร็จ": int(len(ok)),
+        "ส่วนลดเกิน 100%": int((d > ABSURD_DISCOUNT).sum()),
+        "ส่วนลดเกิน 200%": int((d > 200).sum()),
+        "ส่วนลดค่ากลาง (%)": float(d.median()) if d.notna().any() else None,
+        "ปีข้อมูลค่ากลาง": float(yr.median()) if yr.notna().any() else None,
+        "ความน่าเชื่อถือค่ากลาง": float(rel.median()) if rel.notna().any() else None,
+        "คะแนนรวมสูงสุด": float(sc.max()) if sc.notna().any() else None,
+        "ความน่าเชื่อถือ >= 70": int((rel >= 70).sum()),
+    }
+
 
 def summarize(df: pd.DataFrame) -> pd.DataFrame:
     """นับจำนวนหุ้นในแต่ละคำแนะนำ"""
@@ -200,6 +251,8 @@ def main() -> int:
     p.add_argument("--all", action="store_true", help="วิเคราะห์ทุกตัว ไม่คัดก่อน")
     p.add_argument("--rf", type=float, default=None, help="อัตราพันธบัตร")
     p.add_argument("--show", action="store_true", help="ดูผลที่ทำไว้แล้ว")
+    p.add_argument("--reset", action="store_true",
+                   help="ลบผลเก่าแล้วเริ่มใหม่ทั้งหมด")
     a = p.parse_args()
 
     market = "us" if a.us else "thai"
@@ -240,7 +293,16 @@ def main() -> int:
     print(f"\n{'='*72}")
     print(f"  วิเคราะห์ลึกเพื่อหา Strong Buy — ตลาด {market}")
     print(f"{'='*72}")
-    print(f"  รายชื่อทั้งหมด {len(universe):,} ตัว")
+
+    if a.reset:
+        key = DEEP_KEY.format(market=market)
+        removed = 0
+        for d in (snapshot.LOCAL_DIR, snapshot.REPO_DIR):
+            f = d / snapshot._fname(key)
+            if f.exists():
+                f.unlink()
+                removed += 1
+        print(f"  ลบผลเก่าแล้ว {removed} ไฟล์ — จะเริ่มนับหนึ่งใหม่\n")
 
     if not a.all:
         # คัดก่อนด้วยข้อมูลชั้นคัดกรอง เพื่อลดเวลา
@@ -283,6 +345,40 @@ def main() -> int:
     ok = df[df["ปัญหา"].eq("")]
     sb = ok[ok["คำแนะนำ"].eq("Strong Buy")]
     print(f"\n  วิเคราะห์สำเร็จ {len(ok):,}/{len(df):,} ตัว")
+
+    # ---------- ตรวจสุขภาพของผลทั้งชุด ----------
+    dg = diagnose(df)
+    if dg:
+        print(f"\n{'-'*72}")
+        print("  ตรวจสุขภาพผลลัพธ์ — อ่านก่อนเชื่อตัวเลข")
+        print(f"{'-'*72}")
+        print(f"    ปีข้อมูลค่ากลาง        {dg['ปีข้อมูลค่ากลาง']:>6.0f} ปี")
+        print(f"    ความน่าเชื่อถือค่ากลาง {dg['ความน่าเชื่อถือค่ากลาง']:>6.0f} / 100")
+        print(f"    ตัวที่น่าเชื่อถือ >=70  {dg['ความน่าเชื่อถือ >= 70']:>6,} ตัว")
+        print(f"    คะแนนรวมสูงสุดที่ทำได้ {dg['คะแนนรวมสูงสุด']:>6.1f} / 100"
+              "   (Strong Buy ต้อง 82)")
+        print(f"    ส่วนลดค่ากลาง          {dg['ส่วนลดค่ากลาง (%)']:>6.0f}%")
+        print(f"    ส่วนลดเกิน 100%        {dg['ส่วนลดเกิน 100%']:>6,} ตัว")
+        print(f"    ส่วนลดเกิน 200%        {dg['ส่วนลดเกิน 200%']:>6,} ตัว")
+
+        if dg["ส่วนลดเกิน 100%"] > len(ok) * 0.15:
+            print("\n    ⚠️  ส่วนลดสูงผิดปกติเป็นจำนวนมาก")
+            print("        ส่วนลด 100% = มูลค่าที่ประเมินได้เป็น 2 เท่าของราคา")
+            print("        ส่วนลด 300% = เป็น 4 เท่า")
+            print("        ตลาดทั้งตลาดคงไม่พลาดขนาดนั้นพร้อมกัน")
+            print("        สาเหตุที่เป็นไปได้มากกว่าคือ **โมเดลเพี้ยนจากข้อมูลสั้น**")
+            print("        หุ้นไทยมีงบแค่ 4 ปี ซึ่งไม่พอให้ DCF ต่อแนวโน้มได้แม่น")
+            print("        -> ให้ใช้คอลัมน์ 'คะแนนรวม' และ 'ความน่าเชื่อถือ'")
+            print("           ตัดสินแทน 'ส่วนลด' ซึ่งเชื่อถือได้น้อยกว่ามาก")
+
+        if dg["คะแนนรวมสูงสุด"] and dg["คะแนนรวมสูงสุด"] < 82:
+            gap = 82 - dg["คะแนนรวมสูงสุด"]
+            print(f"\n    หมายเหตุ : ทั้งตลาดไม่มีตัวใดถึง 82 "
+                  f"(สูงสุด {dg['คะแนนรวมสูงสุด']:.1f} ห่างอีก {gap:.1f})")
+            print("        เพราะระบบดึงข้อสรุปเข้าหากลางเมื่อความน่าเชื่อถือต่ำ")
+            print("        ซึ่งเป็นพฤติกรรมที่ตั้งใจ — ข้อมูล 4 ปีไม่ควรนำไปสู่")
+            print("        คำแนะนำที่หนักแน่นระดับ Strong Buy")
+            print("        **หุ้นสหรัฐมีโอกาสถึงมากกว่า** เพราะได้ 15 ปีจาก SEC EDGAR")
     if len(sb):
         print(f"\n  🏆 Strong Buy {len(sb)} ตัว")
         cols = ["ticker", "ชื่อบริษัท", "ราคา", "มูลค่าที่ประเมินได้",
