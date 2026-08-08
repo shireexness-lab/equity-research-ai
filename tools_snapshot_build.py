@@ -1,0 +1,142 @@
+"""
+tools_snapshot_build.py — คัดกรองทั้งตลาดบน MacBook แล้วส่งผลขึ้น Google Drive
+===============================================================================
+ปัญหาที่แก้
+-----------
+Yahoo Finance บล็อกคำขอที่มาจากศูนย์ข้อมูล ซึ่งรวมถึง Streamlit Cloud
+พอกดคัดกรองบนเว็บจึงได้ 0 ตัว ทั้งที่รันบน MacBook แล้วได้ครบ
+
+ทำไมบล็อก : Yahoo ไม่อยากให้ใครดูดข้อมูลไปทำระบบเชิงพาณิชย์
+เครื่องบ้าน/มือถือดูเหมือนคนใช้งานจริง เครื่องในศูนย์ข้อมูลดูเหมือนหุ่นยนต์
+IP ของ Streamlit Cloud ยังใช้ร่วมกับผู้ใช้คนอื่นทั้งโลกด้วย จึงโดนบล็อกง่ายกว่า
+
+วิธีแก้ที่ได้ผลแน่นอน
+---------------------
+    [ MacBook ]  ดึงข้อมูล -> บันทึกลง Google Drive
+                                      |
+    [ เว็บ / iPhone ]  กดปุ่ม ⚡ -> อ่านจาก Drive -> ได้ผลใน 2 วินาที
+
+เว็บไม่ต้องคุยกับ Yahoo เลย จึงไม่มีทางโดนบล็อก
+
+วิธีใช้
+-------
+    python3 tools_snapshot_build.py --thai            # หุ้นไทยทั้งตลาด
+    python3 tools_snapshot_build.py --us              # หุ้นสหรัฐยอดนิยม
+    python3 tools_snapshot_build.py --us-all          # หุ้นสหรัฐทั้งตลาด (SEC)
+    python3 tools_snapshot_build.py --thai --limit 50 # ทดลองด้วย 50 ตัวก่อน
+
+ทำให้อัตโนมัติทุกเช้า (ไม่บังคับ)
+----------------------------------
+    crontab -e
+    แล้วใส่บรรทัดนี้ (รันทุกวัน 8 โมงเช้า)
+    0 8 * * * cd ~/equity-research-ai && .venv/bin/python tools_snapshot_build.py --thai
+"""
+
+import argparse
+import sys
+import time
+
+import snapshot
+
+
+def _bar(i, total, msg=""):
+    """แถบความคืบหน้าแบบง่าย ๆ ใน Terminal"""
+    w = 34
+    frac = min(i / total, 1.0) if total else 0
+    fill = int(w * frac)
+    sys.stdout.write(f"\r  [{'█'*fill}{'·'*(w-fill)}] {frac*100:5.1f}%  "
+                     f"{str(msg)[:34]:<34}")
+    sys.stdout.flush()
+
+
+def build(kind: str, limit: int = 0, market=None, industry=None) -> int:
+    from screener import preset, quick_screen
+
+    t0 = time.time()
+
+    if kind == "us-all":
+        from market import us_market_snapshot
+        key = "us-all"
+        print(f"\nคัดกรองหุ้นสหรัฐทั้งตลาดผ่าน SEC EDGAR")
+        print("-" * 58)
+        df = us_market_snapshot(progress=_bar)
+    else:
+        if kind == "thai":
+            from tickers import thai_universe
+            uni = thai_universe(market=market, industry=industry)
+            mk = market or "ทั้งหมด"
+            ind = industry or "ทุกกลุ่ม"
+            uni = uni[:limit] if limit else uni
+            key = f"thai-{mk}-{ind}-{len(uni)}"
+        else:
+            uni = preset("us")
+            uni = uni[:limit] if limit else uni
+            key = f"us-{len(uni)}"
+
+        print(f"\nคัดกรอง {len(uni):,} ตัว  (ชื่อชุดข้อมูล: {key})")
+        print("-" * 58)
+        df = quick_screen(uni, progress=_bar)
+
+    print()
+    n_ok = int(df["ปัญหา"].eq("").sum())
+    rate = n_ok / len(df) * 100 if len(df) else 0
+    mins = (time.time() - t0) / 60
+
+    print(f"\n  ดึงสำเร็จ : {n_ok:,} / {len(df):,} ตัว  ({rate:.0f}%)")
+    print(f"  ใช้เวลา   : {mins:.1f} นาที")
+
+    # ---- ป้องกันการทับของดีด้วยของเสีย ----
+    # ถ้ารอบนี้ล้มเหลวเป็นส่วนใหญ่ (เช่นเน็ตหลุด หรือ Yahoo บล็อกชั่วคราว)
+    # การบันทึกทับจะทำให้ข้อมูลดีที่เคยมีหายไป ซึ่งแย่กว่าการไม่บันทึกเลย
+    if n_ok < max(1, len(df) * 0.3):
+        print("\n  [ไม่บันทึก] รอบนี้ดึงสำเร็จน้อยเกินไป จึงไม่ทับของเดิม")
+        errs = df.loc[~df["ปัญหา"].eq(""), "ปัญหา"].value_counts()
+        print("\n  สาเหตุที่พบบ่อย:")
+        for msg, n in errs.head(5).items():
+            print(f"    {n:>6,} ตัว  {msg}")
+        print()
+        return 1
+
+    r = snapshot.save(key, df, extra={"ขอบเขต": key, "ดึงสำเร็จ": n_ok,
+                                      "แหล่ง": "MacBook"})
+    print(f"\n  บันทึก    : {r.get('ขนาด (KB)', 0)} KB")
+    print(f"    เครื่องนี้    : {'สำเร็จ' if r['local'] else 'ไม่สำเร็จ'}")
+    print(f"    Google Drive : "
+          + ("สำเร็จ" if r["drive"] else
+             "ยังไม่ได้ตั้งค่า (อ่าน 18_เก็บข้อมูลไว้ที่_Google_Drive.md)"))
+
+    if r["drive"]:
+        print("\n  เปิดเว็บหรือมือถือ แล้วกดปุ่ม ⚡ ได้เลย — ไม่ต้องรอดึงใหม่")
+    else:
+        print("\n  ตอนนี้ใช้ได้เฉพาะบนเครื่องนี้ "
+              "ถ้าตั้งค่า Google Drive จะใช้บนมือถือได้ด้วย")
+    print()
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        description="คัดกรองทั้งตลาดบนเครื่องนี้ แล้วเก็บผลไว้ให้เว็บ/มือถือเรียกใช้")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--thai", action="store_true", help="หุ้นไทยทั้งตลาด")
+    g.add_argument("--us", action="store_true", help="หุ้นสหรัฐยอดนิยม")
+    g.add_argument("--us-all", action="store_true",
+                   help="หุ้นสหรัฐทั้งตลาดผ่าน SEC EDGAR")
+    p.add_argument("--limit", type=int, default=0, help="จำกัดจำนวน (0 = ไม่จำกัด)")
+    p.add_argument("--market", default=None, help="เฉพาะหุ้นไทย: SET หรือ mai")
+    p.add_argument("--industry", default=None, help="เฉพาะหุ้นไทย: กลุ่มอุตสาหกรรม")
+    a = p.parse_args()
+
+    kind = "thai" if a.thai else ("us-all" if a.us_all else "us")
+    try:
+        return build(kind, a.limit, a.market, a.industry)
+    except KeyboardInterrupt:
+        print("\n\n  ยกเลิกแล้ว (ไม่ได้บันทึกอะไร)\n")
+        return 1
+    except Exception as e:
+        print(f"\n\n  [ไม่สำเร็จ] {type(e).__name__}: {e}\n")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

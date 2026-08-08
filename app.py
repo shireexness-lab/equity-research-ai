@@ -457,14 +457,23 @@ if MODE.startswith("คัดกรอง"):
                 fresh = quick_screen(universe, progress=on_q)
             st.session_state["quick_df"] = fresh
             # เก็บไว้ใช้ครั้งหน้า — เฉพาะตัวเลขในตาราง ไม่มีรายละเอียดอื่น
-            r = snapshot.save(snap_key, fresh,
-                              extra={"ขอบเขต": snap_key, "ตลาด": key})
-            _peek.clear()                     # ให้ปุ่ม ⚡ เห็นของใหม่ทันที
-            where = " + ".join([w for w, ok in
-                                (("เครื่องนี้", r["local"]),
-                                 ("Google Drive", r["drive"])) if ok]) or "ไม่ได้บันทึก"
-            st.caption(f"บันทึกผลไว้แล้ว : {where} · {r.get('ขนาด (KB)', 0)} KB "
-                       "— ครั้งหน้ากดปุ่ม ⚡ เรียกได้ทันที")
+            #
+            # แต่ **ห้ามทับของเดิมด้วยรอบที่ดึงไม่สำเร็จ**
+            # ถ้า Yahoo บล็อกจนได้ 0 ตัว แล้วเราบันทึกทับ ของดีที่มีอยู่จะหายไปด้วย
+            n_ok = int(fresh["ปัญหา"].eq("").sum())
+            if n_ok >= max(1, len(fresh) * 0.3):
+                r = snapshot.save(snap_key, fresh,
+                                  extra={"ขอบเขต": snap_key, "ตลาด": key,
+                                         "ดึงสำเร็จ": n_ok})
+                _peek.clear()                 # ให้ปุ่ม ⚡ เห็นของใหม่ทันที
+                where = " + ".join([w for w, ok in
+                                    (("เครื่องนี้", r["local"]),
+                                     ("Google Drive", r["drive"])) if ok]) or "ไม่ได้บันทึก"
+                st.caption(f"บันทึกผลไว้แล้ว : {where} · {r.get('ขนาด (KB)', 0)} KB "
+                           "— ครั้งหน้ากดปุ่ม ⚡ เรียกได้ทันที")
+            else:
+                st.caption(f"รอบนี้ดึงสำเร็จเพียง {n_ok:,} ตัว — **ไม่บันทึกทับของเดิม** "
+                           "เพื่อไม่ให้ข้อมูลที่ดีอยู่แล้วหายไป")
         except Exception as e:
             st.error(f"ดึงข้อมูลไม่สำเร็จ — {type(e).__name__}: {e}\n\n"
                      "ถ้าเป็นการคัดกรองทั้งตลาด ลองรันบน MacBook แทน:\n\n"
@@ -556,6 +565,24 @@ if MODE.startswith("คัดกรอง"):
         metric_card(k[3], "P/E ค่ากลางของกลุ่มที่ผ่าน",
                     f"{pe_pos.median():,.1f}" if len(pe_pos) else "—",
                     "(ตารางแสดงค่าจริงรายตัว)")
+
+        # ---------- บอกสาเหตุเมื่อดึงข้อมูลไม่สำเร็จ ----------
+        # ถ้าไม่แสดงสาเหตุ ผู้ใช้จะเห็นแค่ "0 ตัว" แล้วเดาไม่ออกว่าเป็นที่เกณฑ์
+        # หรือที่แหล่งข้อมูล ซึ่งเป็นคนละปัญหาและแก้คนละวิธี
+        if len(got) < len(qdf) * 0.5:
+            errs = qdf.loc[~qdf["ปัญหา"].eq(""), "ปัญหา"].value_counts()
+            with st.expander(f"⚠️ ดึงข้อมูลไม่สำเร็จ {len(qdf)-len(got):,} ตัว "
+                             "— กดดูสาเหตุ", expanded=len(got) == 0):
+                for msg, n in errs.head(6).items():
+                    st.markdown(f"- **{n:,} ตัว** — `{msg}`")
+                st.markdown(
+                    "---\n"
+                    "**ถ้าเจอ `429` หรือ `Too Many Requests`** = Yahoo ปฏิเสธคำขอ  \n"
+                    "Yahoo บล็อกเครื่องในศูนย์ข้อมูล (ซึ่งรวมถึง Streamlit Cloud) "
+                    "แต่ไม่บล็อกเครื่องบ้าน — วิธีแก้ที่ได้ผลแน่นอนคือ "
+                    "**รันบน MacBook แล้วส่งผลขึ้น Google Drive** "
+                    "จากนั้นกดปุ่ม ⚡ บนเว็บหรือมือถือได้ทันที\n\n"
+                    "```\neq\npython3 tools_snapshot_build.py --thai\n```")
 
         if res.empty:
             st.warning("ไม่มีหุ้นตัวใดผ่านเกณฑ์ — ลองผ่อนเกณฑ์ลง")
