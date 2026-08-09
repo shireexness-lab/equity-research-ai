@@ -42,7 +42,7 @@ except Exception:
 
 st.set_page_config(page_title="Equity Research AI Pro",
                    page_icon="📊", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="auto")
 
 ZONE_COLOR = {"Strong Buy": "#1b5e20", "Buy": "#2e7d32", "Hold": "#757575",
               "Reduce": "#ef6c00", "Sell": "#c62828"}
@@ -165,7 +165,53 @@ def apply_theme(name: str):
   .mc .k {{ color:{c['dim']}; font-size:.78rem; }}
   .mc .v {{ color:{c['txt']}; font-size:1.3rem; font-weight:700; line-height:1.3; }}
   .mc .d {{ font-size:.78rem; }}
-  .tw {{ overflow-x:auto; }}
+  .tw {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+  .chart {{ text-align:center; margin:.4rem 0 .8rem; }}
+
+  /* ---------- การ์ดหน้าแรก ---------- */
+  .home {{ display:grid; gap:.9rem;
+          grid-template-columns:repeat(auto-fit, minmax(270px, 1fr)); }}
+  .card {{ border:1px solid {c['line']}; border-radius:.7rem; padding:1rem 1.1rem;
+          background:{c['bg2']}; height:100%; }}
+  .card .ic {{ font-size:1.6rem; line-height:1; }}
+  .card .ti {{ color:{c['txt']}; font-size:1.05rem; font-weight:700;
+              margin:.4rem 0 .25rem; }}
+  .card .de {{ color:{c['dim']}; font-size:.86rem; line-height:1.5; }}
+  .card .st {{ color:{c['pri']}; font-size:.8rem; font-weight:700;
+              margin-top:.5rem; }}
+
+  /* ---------- จอแคบ (มือถือ) ---------- */
+  /*
+     ปัญหาที่แก้บนมือถือ
+       1. ขอบซ้ายขวา 1.2rem กินพื้นที่ไปมากเมื่อจอกว้างแค่ 390px
+       2. ตัวเลขในการ์ด 1.3rem ทำให้ตัวเลข 6 หลักตกบรรทัด
+       3. ปุ่มเตี้ยเกินกว่าจะกดด้วยนิ้วโป้งได้แม่น (มาตรฐานคือสูงอย่างน้อย 44px)
+       4. ตารางเลื่อนซ้ายขวาแล้วหัวตารางหาย ไม่รู้ว่าตัวเลขคือคอลัมน์อะไร
+  */
+  @media (max-width: 640px) {{
+      .block-container {{ padding-left:.6rem !important;
+                         padding-right:.6rem !important;
+                         padding-top:.6rem !important;
+                         max-width:100vw !important; }}
+      .mc {{ padding:.5rem .6rem; }}
+      .mc .v {{ font-size:1.05rem; }}
+      .mc .k {{ font-size:.72rem; }}
+      /* ปุ่มต้องสูงพอให้นิ้วกดโดนแน่ ๆ */
+      .stButton > button {{ min-height:2.7rem; font-size:.95rem; }}
+      .t {{ font-size:.82rem; }}
+      .t td, .t th {{ padding:.3rem .45rem !important; }}
+      /* ตรึงคอลัมน์แรก (ชื่อหุ้น) ไว้ตอนเลื่อนซ้ายขวา
+         ถ้าไม่ตรึง พอเลื่อนไปดูคอลัมน์ขวาจะไม่รู้ว่าแถวนี้คือหุ้นตัวไหน */
+      .t tbody td:first-child, .t thead th:first-child {{
+          position:sticky; left:0; z-index:1;
+          background:{c['bg']} !important; }}
+      .t tbody tr:nth-child(even) td:first-child {{
+          background:{c['bg2']} !important; }}
+      .home {{ grid-template-columns:1fr; }}
+      h1 {{ font-size:1.5rem !important; }}
+      h2 {{ font-size:1.25rem !important; }}
+      h3 {{ font-size:1.1rem !important; }}
+  }}
   /* ชื่อหุ้นที่กดได้ในตารางคัดกรอง */
   a.tk {{ color:{c['pri']} !important; font-weight:700; text-decoration:none;
          border-bottom:1px dashed {c['pri']}; }}
@@ -221,8 +267,17 @@ def show_chart(b64, empty_msg="ไม่มีข้อมูลเพียง�
     980px ตรงกับขนาดที่ matplotlib วาดไว้จริง จึงคมที่สุด
     """
     if b64:
-        c = st.columns([1, 20, 1])          # จัดกึ่งกลาง เว้นขอบทั้งสองข้าง
-        c[1].image(io.BytesIO(base64.b64decode(b64)), width=width)
+        # ---- ทำไมไม่ใช้ width=980 ตรง ๆ แล้ว ----
+        #
+        # จอมือถือกว้างราว 390px เมื่อสั่งรูปกว้าง 980px
+        # เบราว์เซอร์จะทำให้ทั้งหน้าเลื่อนซ้ายขวาได้ ซึ่งพังทั้งหน้าไม่ใช่แค่กราฟ
+        #
+        # ใส่ไว้ในกล่องที่จำกัดความกว้างไม่ให้เกินทั้ง 980px และไม่เกินจอ
+        # บนคอมได้ 980px คมเหมือนเดิม บนมือถือย่อพอดีจอ ไม่ล้น
+        st.markdown(
+            f"<div class='chart'><img src='data:image/png;base64,{b64}' "
+            f"style='max-width:min({width}px, 100%);width:100%;height:auto;'/>"
+            "</div>", unsafe_allow_html=True)
     else:
         st.caption(f"— {empty_msg}")
 
@@ -400,11 +455,21 @@ with tt2:
               on_click=toggle_theme, use_container_width=True,
               help="สลับระหว่างธีมมืดและธีมสว่าง กราฟจะเปลี่ยนสีตามอัตโนมัติ")
 
-MODES = ["วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
+HOME = "🏠 หน้าแรก"
+
+# อ้างชื่อโหมดด้วยตัวแปร ไม่ใช่หมายเลขในรายการ
+# เพราะทุกครั้งที่เพิ่มหน้าใหม่ หมายเลขจะเลื่อน แล้วปุ่มเดิมจะพาไปผิดหน้า
+# (เคยเกิดมาแล้วตอนเพิ่มหน้าปันผล)
+M_ONE = "วิเคราะห์รายตัว"
+M_SCREEN = "คัดกรองทั้งตลาด"
+M_DEEP = "วิเคราะห์ลึกหลายตัว"
+
+MODES = [HOME, "วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
          "เปรียบเทียบ 2–10 ตัว", "🏆 รายการ Strong Buy", "💰 หุ้นปันผล"]
 
 # คำอธิบายสั้น ๆ ใต้แต่ละเมนู — ช่วยให้เลือกถูกโดยไม่ต้องลองกดทีละอัน
 MODE_HELP = {
+    HOME: "รวมทุกความสามารถไว้ที่เดียว",
     "วิเคราะห์รายตัว": "งบ · อัตราส่วน · มูลค่า · กราฟ ของหุ้นตัวเดียว",
     "คัดกรองทั้งตลาด": "ตั้งเกณฑ์แล้วกรองหาหุ้นที่เข้าข่าย",
     "วิเคราะห์ลึกหลายตัว": "วิเคราะห์เต็มรูปแบบ 3–40 ตัวพร้อมกัน",
@@ -415,9 +480,50 @@ MODE_HELP = {
 
 # จัดเมนูเป็นหัวข้อหลัก เพื่อให้หาง่ายเมื่อหน้าเพิ่มขึ้นเรื่อย ๆ
 MODE_GROUPS = [
+    ("", [HOME]),
     ("🔎 ค้นหาหุ้น", ["คัดกรองทั้งตลาด", "🏆 รายการ Strong Buy", "💰 หุ้นปันผล"]),
     ("📊 วิเคราะห์", ["วิเคราะห์รายตัว", "วิเคราะห์ลึกหลายตัว",
                       "เปรียบเทียบ 2–10 ตัว"]),
+]
+
+# ---------------------------------------------------------------------------
+# เนื้อหาการ์ดหน้าแรก
+#
+# เขียนให้คนที่ไม่เคยเห็นระบบนี้มาก่อนอ่านแล้วรู้ทันทีว่า
+# "หน้านี้ตอบคำถามอะไรให้ฉันได้"
+# ไม่ใช่ชื่อฟังก์ชันทางเทคนิคที่ต้องเดาเอาเอง
+# ---------------------------------------------------------------------------
+CARDS = [
+    {"mode": "🏆 รายการ Strong Buy", "icon": "🏆",
+     "title": "หุ้นน่าสนใจที่วิเคราะห์ไว้แล้ว",
+     "desc": "ดูผลวิเคราะห์เชิงลึกทั้งตลาดที่ทำไว้ล่วงหน้า "
+             "เรียงตามคะแนน กรองตามคำแนะนำและความน่าเชื่อถือได้",
+     "ask": "อยากรู้ว่าตอนนี้มีหุ้นตัวไหนคะแนนดีบ้าง"},
+    {"mode": "💰 หุ้นปันผล", "icon": "💰",
+     "title": "หุ้นที่ใกล้จ่ายปันผล",
+     "desc": "ตัวไหนใกล้ขึ้น XD · จ่ายกี่บาทต่อหุ้น · คิดเป็นกี่ % "
+             "ของราคาวันนี้ · ปีหนึ่งจ่ายกี่ครั้ง",
+     "ask": "อยากได้หุ้นปันผล ตัวไหนกำลังจะจ่าย"},
+    {"mode": "คัดกรองทั้งตลาด", "icon": "🔎",
+     "title": "คัดกรองหาหุ้นตามเกณฑ์",
+     "desc": "ตั้งเงื่อนไขเอง เช่น P/E ต่ำกว่า 15 · ROE เกิน 15% · "
+             "หนี้ต่ำ แล้วให้ระบบกรองทั้งตลาดให้",
+     "ask": "อยากหาหุ้นที่เข้าเกณฑ์ของตัวเอง"},
+    {"mode": "วิเคราะห์รายตัว", "icon": "📊",
+     "title": "เจาะลึกหุ้นทีละตัว",
+     "desc": "งบการเงินย้อนหลัง · อัตราส่วน 150+ ตัว · การประเมินมูลค่า "
+             "หลายวิธี · กราฟ · ดาวน์โหลดรายงาน PDF",
+     "ask": "รู้ชื่อหุ้นอยู่แล้ว อยากดูละเอียด"},
+    {"mode": "เปรียบเทียบ 2–10 ตัว", "icon": "⚖️",
+     "title": "เทียบหุ้นหลายตัวพร้อมกัน",
+     "desc": "วางตัวเลขเรียงข้างกันให้เห็นว่าตัวไหนดีกว่าตรงไหน "
+             "54 หัวข้อใน 9 หมวด",
+     "ask": "ตัดสินใจไม่ได้ว่าจะเลือกตัวไหน"},
+    {"mode": "วิเคราะห์ลึกหลายตัว", "icon": "🔬",
+     "title": "วิเคราะห์ลึกชุดที่สนใจ",
+     "desc": "เลือกหุ้น 3–40 ตัวแล้วให้ระบบวิเคราะห์เต็มรูปแบบทีเดียว "
+             "พร้อมจัดอันดับให้",
+     "ask": "มีรายชื่อหุ้นในใจอยู่แล้ว อยากวิเคราะห์ทั้งชุด"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -429,7 +535,7 @@ MODE_GROUPS = [
 # ---------------------------------------------------------------------------
 _qp = st.query_params
 if "t" in _qp:
-    st.session_state["mode"] = MODES[0]
+    st.session_state["mode"] = M_ONE
     st.session_state["jump"] = str(_qp["t"]).strip().upper()
     st.session_state["ran"] = True
     st.query_params.clear()
@@ -462,7 +568,8 @@ with st.sidebar:
 
     _cur = st.session_state.get("mode", MODES[0])
     for _gname, _items in MODE_GROUPS:
-        st.markdown(f"**{_gname}**")
+        if _gname:
+            st.markdown(f"**{_gname}**")
         for _m in _items:
             st.button(_m, key=f"nav_{_m}", use_container_width=True,
                       type="primary" if _m == _cur else "secondary",
@@ -470,15 +577,49 @@ with st.sidebar:
         st.write("")
 
     st.divider()
-    st.caption("⚠️ ไม่ใช่คำแนะนำการลงทุน — เป็นการสรุปตัวเลขเพื่อการศึกษา")
+
+    # ---- ข้อกำหนดการใช้งาน ----
+    #
+    # เว็บนี้เปิดสาธารณะ ใครก็เข้าได้ จึงต้องมีข้อความนี้ให้เห็นได้ทุกหน้า
+    # ไม่ใช่แค่หน้าแรก เพราะคนอาจเข้ามาที่หน้าใดหน้าหนึ่งโดยตรงจากลิงก์ที่แชร์กัน
+    #
+    # ประเทศไทยกำกับ "การให้คำแนะนำการลงทุน" โดย ก.ล.ต.
+    # เครื่องมือคำนวณเพื่อการศึกษาไม่เข้าข่าย แต่ต้องระบุให้ชัดว่าไม่ใช่คำแนะนำ
+    # และไม่ได้ชักชวนให้ซื้อขาย
+    with st.expander("⚠️ ข้อกำหนดการใช้งาน"):
+        st.markdown(
+            "**ไม่ใช่คำแนะนำการลงทุน**\n\n"
+            "เว็บนี้เป็นเครื่องมือคำนวณและสรุปตัวเลขจากงบการเงินสาธารณะ "
+            "เพื่อการศึกษาเท่านั้น ไม่ใช่การให้คำแนะนำ ไม่ใช่การชักชวน "
+            "ให้ซื้อขายหลักทรัพย์ใด ๆ\n\n"
+            "ผู้จัดทำไม่ได้เป็นผู้แนะนำการลงทุนที่ได้รับความเห็นชอบจาก ก.ล.ต.\n\n"
+            "**แหล่งข้อมูล** — SEC EDGAR และ Yahoo Finance "
+            "ซึ่งอาจมีความคลาดเคลื่อน ผู้ใช้ควรตรวจสอบกับงบการเงินฉบับจริง\n\n"
+            "**ความเสี่ยง** — การลงทุนมีความเสี่ยง ผลการดำเนินงานในอดีต "
+            "ไม่ได้รับประกันผลในอนาคต ผู้ลงทุนควรตัดสินใจด้วยตนเอง "
+            "หรือปรึกษาผู้แนะนำการลงทุนที่ได้รับใบอนุญาต")
+    st.caption("⚠️ ไม่ใช่คำแนะนำการลงทุน — เครื่องมือคำนวณเพื่อการศึกษา")
 
 MODE = st.session_state.get("mode", MODES[0])
 if MODE not in MODES:
     MODE = MODES[0]
     st.session_state["mode"] = MODE
 
-st.markdown(f"#### {MODE}")
-st.caption(MODE_HELP.get(MODE, ""))
+# ---------------------------------------------------------------------------
+# แถบหัวหน้า
+#
+# บนมือถือ Streamlit จะพับเมนูซ้ายเก็บไว้หลังปุ่มขีดสามขีดเสมอ
+# ซึ่งผู้ใช้ใหม่มักหาไม่เจอ จึงต้องมีปุ่มกลับหน้าแรกอยู่ในหน้าตลอด
+# หน้าแรกเป็นทางเข้าถึงทุกอย่างอยู่แล้ว มีปุ่มเดียวนี้ก็ไม่มีทางหลงทาง
+# ---------------------------------------------------------------------------
+if MODE != HOME:
+    tb1, tb2 = st.columns([1, 5])
+    tb1.button("🏠 หน้าแรก", use_container_width=True,
+               on_click=_go_mode, args=(HOME,),
+               help="กลับไปดูว่าระบบทำอะไรได้บ้าง")
+    with tb2:
+        st.markdown(f"#### {MODE}")
+        st.caption(MODE_HELP.get(MODE, ""))
 
 
 @st.cache_data(show_spinner=False, ttl=24 * 3600)
@@ -725,6 +866,146 @@ def deep_changes_panel(market: str):
         html_table(show, first_col="ลำดับ", trim_year=False, fit=True,
                    max_height=460, left_cols=("ชื่อบริษัท", "การเปลี่ยนแปลง"),
                    sign_cols=("ส่วนลดขยับ",))
+
+
+# ---------------------------------------------------------------------------
+# หน้าแรก — บอกให้คนที่เพิ่งเข้ามารู้ว่าเว็บนี้ทำอะไรได้บ้าง
+# ---------------------------------------------------------------------------
+if MODE == HOME:
+
+    @st.cache_data(show_spinner=False, ttl=600)
+    def _home_stats():
+        """ตัวเลขจริงของระบบ — ใช้แสดงบนการ์ดให้เห็นว่ามีข้อมูลอยู่จริงแค่ไหน"""
+        out = {}
+        try:
+            import tools_deep_scan as _DS
+            n = 0
+            for mk in ("thai", "us"):
+                df, _ = _DS.load_results(mk)
+                if df is not None and not df.empty:
+                    n += int(df["ปัญหา"].eq("").sum())
+            out["deep"] = n
+        except Exception:
+            out["deep"] = 0
+        try:
+            import dividends as _DV
+            n = 0
+            for mk in ("thai", "us"):
+                df, _ = _DV.load(mk)
+                if df is not None and not df.empty:
+                    n += len(_DV.upcoming(df, days=45))
+            out["div"] = n
+        except Exception:
+            out["div"] = 0
+        try:
+            import archive as _AR
+            s_ = _AR.stats()
+            out["arc_val"] = int(s_["จำนวนค่า"].sum()) if len(s_) else 0
+        except Exception:
+            out["arc_val"] = 0
+        return out
+
+    HS = _home_stats()
+
+    st.markdown("# Equity Research AI Pro")
+    st.markdown("#### วิเคราะห์หุ้นจากงบการเงินจริง ไม่ใช่จากการคาดเดา")
+    st.markdown(
+        f"หุ้นไทย **866 ตัว** · หุ้นสหรัฐ **10,398 ตัว** · "
+        f"งบการเงินในคลัง **{HS['arc_val']:,} ค่า**  \n"
+        "ตัวเลขทุกตัวคำนวณด้วยโปรแกรม ตรวจย้อนกลับได้ว่ามาจากบรรทัดไหนในงบ")
+
+    st.divider()
+
+    # ---------- ช่องค้นหา — ทางลัดที่คนส่วนใหญ่อยากได้ ----------
+    st.markdown("##### เริ่มจากพิมพ์ชื่อหุ้นที่สนใจ")
+    hc1, hc2 = st.columns([4, 1])
+    hc1.text_input("ชื่อหุ้น", key="home_q", label_visibility="collapsed",
+                   placeholder="เช่น  PTT.BK   KBANK.BK   AAPL   MSFT")
+
+    def _go_search():
+        t = str(st.session_state.get("home_q", "")).strip().upper()
+        if t:
+            st.session_state["jump"] = t
+            st.session_state["mode"] = M_ONE
+            st.session_state["ran"] = True
+
+    hc2.button("วิเคราะห์", type="primary", use_container_width=True,
+               on_click=_go_search)
+    st.caption("หุ้นไทยต้องมี **.BK** ต่อท้ายเสมอ เช่น `CPALL.BK` · "
+               "หุ้นสหรัฐใส่ชื่อย่อได้เลย")
+
+    st.divider()
+    st.markdown("##### หรือเลือกจากสิ่งที่ระบบทำได้")
+
+    # ---------- การ์ดความสามารถ ----------
+    #
+    # วาดการ์ดด้วย HTML แล้ววางปุ่มของ Streamlit ไว้ใต้การ์ด
+    # เพราะปุ่มจริงใส่เข้าไปใน HTML ที่เราเขียนเองไม่ได้
+    # และต้องใช้ปุ่มจริง เพราะลิงก์ธรรมดาจะทำให้โหลดหน้าใหม่ทั้งหน้า
+    for i in range(0, len(CARDS), 2):
+        cols = st.columns(2)
+        for col, card in zip(cols, CARDS[i:i + 2]):
+            with col:
+                stat = ""
+                if card["mode"].startswith("🏆") and HS["deep"]:
+                    stat = f"วิเคราะห์ไว้แล้ว {HS['deep']:,} ตัว"
+                elif card["mode"].startswith("💰") and HS["div"]:
+                    stat = f"ใกล้ขึ้น XD ใน 45 วัน {HS['div']:,} ตัว"
+                elif card["mode"] == M_SCREEN:
+                    stat = "กรองจากทั้งตลาดได้ทันที"
+
+                st.markdown(
+                    f"<div class='card'><div class='ic'>{card['icon']}</div>"
+                    f"<div class='ti'>{card['title']}</div>"
+                    f"<div class='de'>{card['desc']}</div>"
+                    + (f"<div class='st'>{stat}</div>" if stat else "")
+                    + "</div>", unsafe_allow_html=True)
+                st.button(card["ask"], key=f"card_{card['mode']}",
+                          use_container_width=True,
+                          on_click=_go_mode, args=(card["mode"],))
+                st.write("")
+
+    st.divider()
+
+    with st.expander("ระบบนี้ทำงานอย่างไร"):
+        st.markdown(
+            "**หลักการเดียวที่ยึดตลอด — โปรแกรมคำนวณ ไม่ใช่ AI เดา**\n\n"
+            "ตัวเลขการเงินทุกตัว (P/E · ROE · DCF · มูลค่าที่ประเมินได้) "
+            "คำนวณด้วยโปรแกรมจากงบการเงินจริง จึงตรวจย้อนกลับได้ว่า"
+            "เลขแต่ละตัวมาจากบรรทัดไหนในงบ\n\n"
+            "| ขั้นตอน | ทำอะไร |\n|---|---|\n"
+            "| 1. ดึงข้อมูล | หุ้นสหรัฐจาก **SEC EDGAR** ย้อนหลังถึง 15 ปี · "
+            "หุ้นไทยจาก Yahoo Finance |\n"
+            "| 2. คำนวณ | อัตราส่วนกว่า 150 ตัว · ประเมินมูลค่าหลายวิธี "
+            "ตามกลุ่มธุรกิจ |\n"
+            "| 3. ให้คะแนน | คุณภาพกิจการ · ความเสี่ยง · Buffett Score · "
+            "ความน่าเชื่อถือของข้อมูลเอง |\n"
+            "| 4. สรุป | รวมเป็นคะแนน 0–100 พร้อมบอกที่มาของทุกคะแนน |\n\n"
+            "**ระบบบอกความไม่แน่ใจของตัวเองด้วย** — หุ้นที่มีงบย้อนหลังสั้น "
+            "จะได้คะแนนความน่าเชื่อถือต่ำ และระบบจะดึงข้อสรุปเข้าหากลาง "
+            "แทนที่จะฟันธงจากข้อมูลที่ไม่พอ")
+
+    with st.expander("ข้อจำกัดที่ควรรู้ก่อนใช้"):
+        st.markdown(
+            "- **หุ้นไทยมีงบย้อนหลังแค่ 4 ปี** จากแหล่งข้อมูลฟรี ซึ่งไม่ครอบคลุม"
+            "วัฏจักรธุรกิจหนึ่งรอบ ผลประเมินจึงเชื่อได้น้อยกว่าหุ้นสหรัฐ\n"
+            "- **ส่วนลดที่สูงมากมักแปลว่าโมเดลเพี้ยน ไม่ใช่หุ้นถูก** "
+            "ให้ดู `คะแนนรวม` และ `ความน่าเชื่อถือ` ประกอบเสมอ\n"
+            "- **ผลเป็นภาพนิ่ง ณ วันที่วิเคราะห์** ราคาเปลี่ยนทุกวัน\n"
+            "- **ระบบไม่รู้เรื่องที่ยังไม่อยู่ในงบ** เช่น ผู้บริหารลาออก "
+            "คู่แข่งรายใหม่ หรือกฎหมายที่กำลังจะเปลี่ยน")
+
+    st.error(
+        "⚠️ **ไม่ใช่คำแนะนำการลงทุน**  \n"
+        "เว็บนี้เป็นเครื่องมือคำนวณและสรุปตัวเลขจากงบการเงินสาธารณะเพื่อการศึกษา "
+        "ไม่ใช่การให้คำแนะนำหรือชักชวนให้ซื้อขายหลักทรัพย์ "
+        "และผู้จัดทำไม่ได้เป็นผู้แนะนำการลงทุนที่ได้รับความเห็นชอบจาก ก.ล.ต.  \n"
+        "การลงทุนมีความเสี่ยง ผู้ลงทุนควรศึกษาข้อมูลและตัดสินใจด้วยตนเอง "
+        "หรือปรึกษาผู้แนะนำการลงทุนที่ได้รับใบอนุญาตก่อนตัดสินใจทุกครั้ง")
+    st.caption("ข้อมูลงบการเงินจาก SEC EDGAR และ Yahoo Finance "
+               "อาจมีความคลาดเคลื่อน ควรตรวจสอบกับงบการเงินฉบับจริงก่อนใช้")
+    st.stop()
+
 
 
 # ---------------------------------------------------------------------------
@@ -1667,7 +1948,7 @@ if MODE.startswith("คัดกรอง"):
             # session_state จึงอยู่ครบ กลับมาโหมดคัดกรองแล้วเจอผลเดิมทันที
             def _open_stock(tk, deep=False):
                 st.session_state["jump"] = tk
-                st.session_state["mode"] = MODES[2] if deep else MODES[0]
+                st.session_state["mode"] = M_DEEP if deep else M_ONE
                 # ตั้งธงให้หน้าวิเคราะห์เริ่มคำนวณเอง ไม่ต้องกดปุ่มซ้ำ
                 st.session_state["ran"] = True
                 if deep:
@@ -1730,7 +2011,7 @@ if MODE.startswith("คัดกรอง"):
                           type="primary", use_container_width=True,
                           disabled=len(sel) == 0,
                           on_click=lambda: st.session_state.update(
-                              {"handoff": sel, "mode": MODES[2]}))
+                              {"handoff": sel, "mode": M_DEEP}))
             with b4:
                 st.button(f"เปรียบเทียบ ({len(sel)})", use_container_width=True,
                           disabled=not (2 <= len(sel) <= 10),
@@ -2043,7 +2324,7 @@ except Exception:
 if _last_scope.get("snap_key"):
     _bk = st.columns([1, 3])
     _bk[0].button("↩️ กลับไปหน้าคัดกรอง", use_container_width=True,
-                  on_click=lambda: st.session_state.update({"mode": MODES[1]}))
+                  on_click=lambda: st.session_state.update({"mode": M_SCREEN}))
     _bk[1].caption(f"ผลคัดกรองล่าสุด **{_last_scope['snap_key']}** "
                    "ถูกบันทึกไว้แล้ว — กดกลับไปได้เลย ไม่ต้องคัดกรองใหม่")
 
