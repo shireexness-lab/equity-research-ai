@@ -60,10 +60,75 @@ KEEP = ["ticker", "ชื่อบริษัท", "คำแนะนำ", "�
         "Buffett", "คุณภาพ", "ความเสี่ยง", "กลุ่ม", "วิเคราะห์เมื่อ", "ปัญหา"]
 
 
+# ---------------------------------------------------------------------------
+# ด่านคัดก่อนวิเคราะห์ — เอาสิ่งที่ไม่ใช่ "หุ้นสามัญของบริษัท" ออก
+#
+# ทำไมต้องมี
+# -----------
+# ในรายชื่อหุ้นสหรัฐ 10,398 ตัว มีของที่ไม่ใช่หุ้นบริษัทปนอยู่มาก
+# warrant · unit · right · ETF · กองทุนทองคำ · SPAC ที่ยังไม่มีธุรกิจ
+#
+# ของพวกนี้ไม่มีงบการเงินของกิจการจริง การเอา DCF ไปจับจึงให้ผลไร้สาระ
+# ตัวอย่างจริงจากรอบที่รันไป
+#
+#   SATLW  ส่วนลด 59,528,560,000,000 %   (warrant ของ Satellogic)
+#   FLDDW  ส่วนลด 18,895,000,000 %       (warrant ของ Fold Holdings)
+#   BAR    ส่วนลด 229 %                  (กองทุนทองคำ ไม่ใช่บริษัท)
+#
+# สาเหตุคือ warrant ราคาไม่กี่เซนต์ แต่โมเดลไปดึงงบของบริษัทแม่มาคำนวณ
+# ส่วนลด = (มูลค่า / ราคา − 1) จึงระเบิดเมื่อตัวหารเกือบเป็นศูนย์
+# ---------------------------------------------------------------------------
+
+# ท้าย ticker ที่บอกว่าไม่ใช่หุ้นสามัญ
+# ตลาดสหรัฐใช้ตัวต่อท้ายแบบนี้ : W = warrant · U = unit · R = right
+_BAD_SUFFIX = ("-WT", "-UN", "-RT", "-WS", "-U", "-W", "-R", "-P",
+               ".WS", ".U", ".W")
+
+# คำในชื่อบริษัทที่บอกว่าไม่ใช่กิจการที่มีงบให้วิเคราะห์
+_BAD_NAME = ("etf", " trust", "shares gold", "gold trust", "silver trust",
+             " fund", "index fund", "acquisition corp", "acquisition corporation",
+             "warrant", " unit", "royalty trust", "commodity")
+
+# ชนิดหลักทรัพย์ที่ yfinance บอกมา — เอาเฉพาะหุ้นสามัญ
+_OK_TYPES = ("EQUITY", "")
+
+
+def looks_not_common_stock(ticker: str, name: str = "", qtype: str = ""):
+    """
+    บอกว่าตัวนี้ไม่ใช่หุ้นสามัญเพราะอะไร — คืน "" ถ้าผ่าน
+
+    ตรวจ 3 ชั้น เรียงจากถูกที่สุดไปแพงที่สุด
+        1. รูปแบบ ticker    ไม่ต้องดึงข้อมูลเลย
+        2. ชนิดจาก yfinance ต้องดึงข้อมูลแล้ว แต่แม่นที่สุด
+        3. ชื่อบริษัท       จับ ETF/กองทุนที่หลุดจากสองชั้นแรก
+    """
+    t = str(ticker).upper()
+    for s in _BAD_SUFFIX:
+        if t.endswith(s):
+            return f"ไม่ใช่หุ้นสามัญ (ลงท้าย {s})"
+
+    q = str(qtype or "").upper()
+    if q and q not in _OK_TYPES:
+        return f"ไม่ใช่หุ้นสามัญ ({q})"
+
+    n = str(name or "").lower()
+    for w in _BAD_NAME:
+        if w in n:
+            return f"ไม่ใช่หุ้นสามัญ (ชื่อมีคำว่า{w.strip()})"
+    return ""
+
+
 def analyze_one(ticker: str, rf=None) -> dict:
     """วิเคราะห์ลึก 1 ตัว แล้วสรุปเป็นคำแนะนำ — คืนแถวเดียว"""
     row = {"ticker": ticker, "วิเคราะห์เมื่อ": datetime.now().strftime("%Y-%m-%d"),
            "ปัญหา": ""}
+
+    # ชั้นที่ถูกที่สุด — ดูจากชื่อ ticker ก่อน ไม่ต้องเสียเวลาดึงข้อมูล
+    bad = looks_not_common_stock(ticker)
+    if bad:
+        row["ปัญหา"] = bad
+        return row
+
     try:
         from bands import build as build_bands
         from data_layer import get_stock_data
@@ -76,6 +141,16 @@ def analyze_one(ticker: str, rf=None) -> dict:
         import risk as RK
 
         data = get_stock_data(ticker)
+
+        # ชั้นที่แม่นที่สุด — ต้องดึงข้อมูลแล้วถึงรู้ชนิดหลักทรัพย์
+        _inf = data.get("info", {}) or {}
+        bad = looks_not_common_stock(ticker, _inf.get("longName"),
+                                     _inf.get("quoteType"))
+        if bad:
+            row["ปัญหา"] = bad
+            row["ชื่อบริษัท"] = _inf.get("longName", ticker)
+            return row
+
         R = compute_ratios(data)
         v = value_stock(data, R, rf=rf)
         b = build_bands(data, R, v)
@@ -320,6 +395,122 @@ def run(tickers, market: str, rf=None, save_every=10,
         if c not in df.columns:
             df[c] = None
     return df[KEEP]
+
+
+# ส่วนลดที่สูงจนต้องถือว่าโมเดลพัง ไม่ใช่ตลาดพลาด
+#
+# 300% = มูลค่าที่ประเมินได้เป็น 4 เท่าของราคา
+# ถ้าเป็นจริงคือโอกาสระดับที่กองทุนทั้งโลกต้องแย่งกันซื้อ
+# ในทางปฏิบัติมันแปลว่าตัวหาร (ราคา) เล็กผิดปกติ หรืองบสั้นเกินกว่าจะต่อแนวโน้ม
+MODEL_BROKEN_DISCOUNT = 300.0
+
+# ราคาต่ำกว่านี้ทำให้ส่วนลดระเบิดได้ง่าย เพราะเป็นตัวหาร
+PENNY_PRICE = 1.0
+
+
+def add_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ติดธงเตือนให้ผลที่วิเคราะห์ไว้แล้ว โดยไม่ต้องรันใหม่
+
+    ใช้กับผลเก่าได้ทันที — สำคัญมากเพราะการรันใหม่ใช้เวลาหลายชั่วโมง
+    """
+    if df is None or df.empty:
+        return df
+    d = df.copy()
+
+    disc = pd.to_numeric(d.get("ส่วนลด (%)"), errors="coerce")
+    price = pd.to_numeric(d.get("ราคา"), errors="coerce")
+    yrs = pd.to_numeric(d.get("ปีข้อมูล"), errors="coerce")
+
+    flags = []
+    for i in d.index:
+        f = []
+        nm = str(d.at[i, "ชื่อบริษัท"]) if "ชื่อบริษัท" in d.columns else ""
+        bad = looks_not_common_stock(d.at[i, "ticker"], nm)
+        if bad:
+            f.append("ไม่ใช่หุ้นสามัญ")
+        if pd.notna(disc.get(i)) and abs(disc.get(i)) > MODEL_BROKEN_DISCOUNT:
+            f.append("ส่วนลดเกินจริง")
+        if pd.notna(price.get(i)) and price.get(i) < PENNY_PRICE:
+            f.append("ราคาต่ำกว่า 1")
+        if pd.notna(yrs.get(i)) and yrs.get(i) < 4:
+            f.append("ข้อมูลสั้นกว่า 4 ปี")
+
+        # ดึงชื่อบริษัทไม่ได้ = ข้อมูลพื้นฐานไม่ครบตั้งแต่ต้น
+        # ตัวอย่างจริง PFSTY ที่ชื่อบริษัทออกมาเป็น "PFSTY" เฉย ๆ
+        # ถ้าแม้แต่ชื่อยังดึงไม่ได้ ตัวเลขที่เหลือก็ไม่ควรเชื่อ
+        if not nm.strip() or nm.strip().upper() == str(d.at[i, "ticker"]).upper():
+            f.append("ไม่มีชื่อบริษัท")
+
+        if "คำแนะนำ" in d.columns and not str(d.at[i, "คำแนะนำ"] or "").strip():
+            f.append("ไม่มีคำแนะนำ")
+
+        flags.append(" · ".join(f))
+
+    d["ธงเตือน"] = flags
+    return d
+
+
+# คำต่อท้ายที่บอกรูปแบบนิติบุคคล ไม่ได้บอกว่าเป็นคนละบริษัท
+#
+# ต้องตัดออกก่อนเทียบชื่อ มิฉะนั้นจะจับคู่ไม่เจอ ตัวอย่างจริง
+#   CUVL  = "Clinuvel Pharmaceuticals Limited"
+#   CLVLY = "Clinuvel Pharmaceuticals Ltd"
+# สองบรรทัดนี้คือบริษัทเดียวกัน แต่เขียนคำว่า Limited ไม่เหมือนกัน
+_LEGAL_WORDS = ("incorporated", "corporation", "limited", "company",
+                "holdings", "holding", "group", "plc", "inc", "corp",
+                "ltd", "llc", "lp", "nv", "sa", "ag", "se", "co", "the",
+                "class", "adr", "ordinary", "shares")
+
+
+def _norm_name(s) -> str:
+    """ทำชื่อบริษัทให้เทียบกันได้ — ตัดเครื่องหมายและคำต่อท้ายนิติบุคคลออก"""
+    import re
+    t = re.sub(r"[^a-z0-9 ]", " ", str(s or "").lower())
+    words = [w for w in t.split() if w and w not in _LEGAL_WORDS]
+    return " ".join(words)
+
+
+def drop_dupe_listings(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    บริษัทเดียวกันที่จดทะเบียนหลายที่ ให้เหลือตัวเดียว
+
+    ตัวอย่างจริง — Clinuvel Pharmaceuticals โผล่ 3 แถว
+        CUVL   หุ้นหลัก
+        CLVLF  หุ้นเดียวกันซื้อขายนอกตลาด (F ท้ายชื่อ)
+        PFSTY  ใบแสดงสิทธิฝากหุ้น ADR (Y ท้ายชื่อ)
+
+    ทั้งสามคือกิจการเดียวกัน ถ้าปล่อยไว้จะกินที่หัวตารางถึง 3 แถว
+    ทั้งที่เป็นโอกาสเดียว และทำให้เข้าใจผิดว่ามีตัวเลือกมากกว่าความจริง
+
+    เก็บตัวที่ **ปีข้อมูลมากที่สุด** ไว้ ถ้าเท่ากันเอาคะแนนรวมสูงกว่า
+    """
+    if df is None or df.empty or "ชื่อบริษัท" not in df.columns:
+        return df
+    d = df.copy()
+    d["_y"] = pd.to_numeric(d.get("ปีข้อมูล"), errors="coerce").fillna(0)
+    d["_s"] = pd.to_numeric(d.get("คะแนนรวม"), errors="coerce").fillna(0)
+    d["_n"] = d["ชื่อบริษัท"].map(_norm_name)
+    # ชื่อว่างหรือชื่อเท่ากับ ticker แปลว่าดึงชื่อไม่ได้ อย่าเอามารวมกลุ่ม
+    same = d["_n"].ne("") & d["_n"].ne(d["ticker"].astype(str).str.lower())
+    keep = (d[same].sort_values(["_y", "_s"], ascending=False)
+            .drop_duplicates("_n"))
+    out = pd.concat([keep, d[~same]])
+    return out.drop(columns=["_y", "_s", "_n"]).sort_index()
+
+
+def clean(df: pd.DataFrame, drop_flagged=True, dedupe=True) -> pd.DataFrame:
+    """คืนเฉพาะแถวที่เชื่อถือได้ — ใช้ก่อนแสดงรายการแนะนำเสมอ"""
+    d = add_flags(df)
+    if d is None or d.empty:
+        return d
+    if "ปัญหา" in d.columns:
+        d = d[d["ปัญหา"].eq("")]
+    if drop_flagged:
+        d = d[d["ธงเตือน"].eq("")]
+    if dedupe:
+        d = drop_dupe_listings(d)
+    return d
 
 
 def load_results(market: str):
@@ -702,7 +893,18 @@ def main() -> int:
             print("        ส่วนลด 300% = เป็น 4 เท่า")
             print("        ตลาดทั้งตลาดคงไม่พลาดขนาดนั้นพร้อมกัน")
             print("        สาเหตุที่เป็นไปได้มากกว่าคือ **โมเดลเพี้ยนจากข้อมูลสั้น**")
-            print("        หุ้นไทยมีงบแค่ 4 ปี ซึ่งไม่พอให้ DCF ต่อแนวโน้มได้แม่น")
+            # ข้อความต้องตรงกับตลาดที่รันจริง
+            # เดิมเขียนตายตัวว่า "หุ้นไทย 4 ปี" ทำให้ตอนรันหุ้นสหรัฐ
+            # (ปีข้อมูลค่ากลาง 7 ปี) ขึ้นคำอธิบายที่ไม่ตรงกับข้อมูลตรงหน้า
+            _y = dg.get("ปีข้อมูลค่ากลาง") or 0
+            if market == "thai":
+                print(f"        หุ้นไทยมีงบเพียง {_y:.0f} ปี "
+                      "ซึ่งไม่พอให้ DCF ต่อแนวโน้มได้แม่น")
+            else:
+                print(f"        ปีข้อมูลค่ากลางอยู่ที่ {_y:.0f} ปี และในรายชื่อ"
+                      "หุ้นสหรัฐมี warrant/unit/ETF ปนอยู่มาก")
+                print("        ซึ่งไม่มีงบกิจการจริง ทำให้ส่วนลดพุ่งเกินจริง")
+                print("        ระบบกรองให้แล้วตอนแสดงผล (ดูคอลัมน์ 'ธงเตือน')")
             print("        -> ให้ใช้คอลัมน์ 'คะแนนรวม' และ 'ความน่าเชื่อถือ'")
             print("           ตัดสินแทน 'ส่วนลด' ซึ่งเชื่อถือได้น้อยกว่ามาก")
 
