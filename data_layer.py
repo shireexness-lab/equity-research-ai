@@ -250,6 +250,16 @@ def get_stock_data(
     if not force_refresh:
         cached = _load_cache(ticker, max_age_hours)
         if cached is not None:
+            # แคชที่บันทึกไว้ก่อนมีคลัง จะยังไม่มีปีเก่าที่คลังเก็บไว้
+            # รวมให้ครั้งเดียวแล้วเขียนกลับ ครั้งต่อไปจะอ่านได้เลยไม่ต้องรวมซ้ำ
+            if not cached.get("รวมคลังแล้ว"):
+                try:
+                    import archive as _AR
+                    cached = _AR.merge_into(cached)
+                    cached["รวมคลังแล้ว"] = True
+                    _save_cache(ticker, cached)
+                except Exception:
+                    pass
             return cached
 
     # ---- 2) ดึงจากอินเทอร์เน็ต ----
@@ -330,6 +340,26 @@ def get_stock_data(
         "_from_cache": False,
         "_cache_age_hours": 0.0,
     }
+
+    # ---- 4) เก็บเข้าคลังสะสม แล้วดึงปีเก่าที่เคยเก็บไว้กลับมารวม ----
+    #
+    # นี่คือจุดที่ทำให้ระบบ "ลึกขึ้นเองทุกปี"
+    #
+    # yfinance ให้งบแค่ 4 ปีล่าสุด และหน้าต่าง 4 ปีนั้นเลื่อนไปทุกปี
+    # ปีที่หลุดออกจากหน้าต่างจะหายจาก Yahoo ตลอดไป
+    # แต่ถ้าเราเก็บทุกครั้งที่ดึงไว้เอง แล้วเอามารวมกลับ
+    # จำนวนปีที่ใช้วิเคราะห์ได้จะเพิ่มขึ้นปีละ 1 ไปเรื่อย ๆ
+    #
+    # ทำตรงนี้จุดเดียว โมดูลอื่นทั้งหมด (ratios, valuation, forecast, quality)
+    # จึงได้ประโยชน์ทันทีโดยไม่ต้องแก้โค้ดเลยแม้แต่บรรทัดเดียว
+    try:
+        import archive as _AR
+        _AR.put(ticker, data)
+        data = _AR.merge_into(data)
+        data["รวมคลังแล้ว"] = True
+    except Exception as e:
+        # คลังพังต้องไม่ทำให้ทั้งระบบพัง — ข้อมูลรอบนี้ยังใช้ได้ตามปกติ
+        print(f"  [เตือน] เก็บเข้าคลังไม่สำเร็จ ({e})", file=sys.stderr)
 
     _save_cache(ticker, data)
     return data
