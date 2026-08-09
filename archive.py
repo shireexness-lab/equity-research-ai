@@ -130,32 +130,227 @@ def to_long(ticker: str, data: dict) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# 1.5) ชั้นอ่าน-เขียนที่กันข้อมูลหาย
+#
+# ความเสี่ยงที่ต้องกันมี 3 อย่าง เรียงตามโอกาสเกิดจริง
+#
+#   1. เครื่องดับ / กด Ctrl-C ระหว่างเขียนไฟล์
+#      -> ไฟล์เหลือครึ่งเดียว อ่านไม่ออก ข้อมูลทั้งปีหายทันที
+#      แก้ด้วย : เขียนลงไฟล์ชั่วคราวก่อน เสร็จแล้วค่อยสลับชื่อ
+#                การสลับชื่อเป็นการกระทำเดียวที่ระบบไฟล์รับประกันว่าไม่ขาดครึ่ง
+#
+#   2. บั๊กในโค้ดทำให้แถวหายโดยไม่มีใครรู้
+#      -> แก้ด้วย : นับแถวก่อนและหลังทุกครั้ง ถ้าลดลงให้ยกเลิกการเขียน
+#
+#   3. ไฟล์เสียหายภายหลังโดยไม่รู้ตัว
+#      -> แก้ด้วย : เก็บบัญชีคุม (จำนวนแถว + ลายนิ้วมือ) ไว้ตรวจย้อนหลังได้
+# ---------------------------------------------------------------------------
+
+import hashlib
+import os
+
+LEDGER = "บัญชีคุมคลัง.json"
+JOURNAL = "สมุดบันทึกการเขียน.csv"
+
+
+def _read_shard(f: Path) -> pd.DataFrame:
+    """อ่านไฟล์ปีหนึ่ง — ถ้าไฟล์เสียให้แจ้งชัดเจน ไม่ใช่คืนตารางว่างเงียบ ๆ"""
+    if not f.exists():
+        return pd.DataFrame(columns=COLS)
+    try:
+        return pd.read_parquet(f)
+    except Exception as e:
+        raise RuntimeError(
+            f"ไฟล์คลังเสียหาย : {f}\n"
+            f"  ({type(e).__name__}: {e})\n"
+            f"  หยุดทำงานเพื่อไม่ให้เขียนทับข้อมูลที่ยังกู้ได้\n"
+            f"  ให้กู้จาก git ด้วย :  git checkout -- {f}") from e
+
+
+def _digest(df: pd.DataFrame) -> str:
+    """ลายนิ้วมือของข้อมูล — ใช้ตรวจว่าถูกแก้โดยไม่ผ่านระบบไหม"""
+    s = df.sort_values(COLS[:4]).to_csv(index=False).encode("utf-8")
+    return hashlib.sha256(s).hexdigest()[:16]
+
+
+def _write_shard(f: Path, df: pd.DataFrame, before: int = 0):
+    """
+    เขียนไฟล์ปีหนึ่งแบบปลอดภัย
+
+    before = จำนวนแถวเดิม ใช้ตรวจว่าไม่มีแถวหายไป
+    """
+    if len(df) < before:
+        raise RuntimeError(
+            f"ยกเลิกการเขียน {f.name} — แถวจะลดจาก {before:,} เหลือ {len(df):,}\n"
+            f"  คลังนี้ห้ามข้อมูลหาย ถ้าเกิดกรณีนี้แปลว่ามีบั๊ก")
+
+    tmp = f.with_suffix(f.suffix + ".กำลังเขียน")
+    df.to_parquet(tmp, compression="zstd", index=False)
+    # os.replace เป็นการสลับชื่อแบบ atomic
+    # ถ้าไฟดับกลางคัน จะได้ไฟล์เดิมทั้งไฟล์ หรือไฟล์ใหม่ทั้งไฟล์ ไม่มีครึ่ง ๆ
+    os.replace(tmp, f)
+
+    _update_ledger(f, df)
+    _journal(f, before, len(df))
+
+
+def _ledger_path(market_dir: Path) -> Path:
+    return market_dir / LEDGER
+
+
+def _update_ledger(f: Path, df: pd.DataFrame):
+    """บันทึกจำนวนแถวและลายนิ้วมือไว้ตรวจสอบภายหลัง"""
+    import json
+    p = _ledger_path(f.parent)
+    book = {}
+    if p.exists():
+        try:
+            book = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            book = {}
+    book[f.name] = {
+        "แถว": int(len(df)),
+        "หุ้น": int(df["ticker"].nunique()) if len(df) else 0,
+        "ลายนิ้วมือ": _digest(df),
+        "อัปเดตเมื่อ": datetime.now().isoformat(timespec="seconds"),
+    }
+    p.write_text(json.dumps(book, ensure_ascii=False, indent=1),
+                 encoding="utf-8")
+
+
+def _journal(f: Path, before: int, after: int):
+    """สมุดบันทึกว่าเขียนอะไรไปบ้าง — ไล่ย้อนได้ว่าข้อมูลเปลี่ยนตอนไหน"""
+    p = f.parent / JOURNAL
+    new = not p.exists()
+    with open(p, "a", encoding="utf-8") as fh:
+        if new:
+            fh.write("เวลา,ไฟล์,แถวก่อน,แถวหลัง,เพิ่ม\n")
+        fh.write(f"{datetime.now().isoformat(timespec='seconds')},"
+                 f"{f.name},{before},{after},{after - before}\n")
+
+
+def verify(market: str = None) -> pd.DataFrame:
+    """
+    ตรวจว่าคลังยังครบถ้วนตรงกับบัญชีคุมไหม
+
+    ใช้ตอบคำถาม "ข้อมูลหายไปไหมโดยที่เราไม่รู้ตัว"
+    """
+    import json
+    mks = [market] if market else ["thai", "us"]
+    rows = []
+    for m in mks:
+        d = ARCHIVE_DIR / m
+        if not d.exists():
+            continue
+        p = _ledger_path(d)
+        book = {}
+        if p.exists():
+            try:
+                book = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        for f in sorted(d.glob("*.parquet")):
+            if "การแก้ไข" in f.name:
+                continue
+            rec = book.get(f.name)
+            try:
+                df = pd.read_parquet(f)
+                ok_read = True
+            except Exception:
+                df, ok_read = pd.DataFrame(columns=COLS), False
+
+            if not ok_read:
+                status = "❌ ไฟล์เสียหาย อ่านไม่ได้"
+            elif rec is None:
+                status = "⚠️ ไม่มีในบัญชีคุม (เพิ่งสร้างหรือแก้นอกระบบ)"
+            elif len(df) < rec["แถว"]:
+                status = f"❌ แถวหาย {rec['แถว'] - len(df):,} แถว"
+            elif _digest(df) != rec["ลายนิ้วมือ"]:
+                status = "⚠️ เนื้อหาต่างจากบัญชีคุม"
+            else:
+                status = "✅ ครบถ้วน"
+
+            rows.append({"ตลาด": m, "ไฟล์": f.name,
+                         "แถวจริง": len(df),
+                         "แถวตามบัญชี": rec["แถว"] if rec else None,
+                         "สถานะ": status})
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
 # 2) เขียนลงคลัง — รวมของใหม่เข้าของเก่า ไม่ลบ
 # ---------------------------------------------------------------------------
+
+# จำนวนปีที่ยังยอมให้แก้ไขได้หลังจบปีงบ
+#
+# ทำไมไม่ล็อกทันทีที่ปีจบ
+# ------------------------
+# บริษัทประกาศงบปี 2025 ในช่วงต้นปี 2026 และช่วงแรกตัวเลขที่ Yahoo ให้
+# มักไม่ครบ (บางบรรทัดยังว่าง) ถ้าล็อกทันทีที่ 1 ม.ค. 2026
+# ค่าที่ไม่ครบจะถูกตรึงไว้ตลอดกาล ซึ่งแย่กว่าปัญหาที่พยายามแก้
+#
+# ให้เวลา 1 ปีเต็มเพื่อให้ตัวเลขนิ่ง แล้วค่อยล็อกถาวร
+# ในปี 2026 : ปี 2024 และก่อนหน้า = ล็อกแล้ว · ปี 2025 = ยังแก้ได้ · 2026 = เปิด
+LOCK_AFTER_YEARS = 1
+
+
+def is_locked(period_or_year, today=None) -> bool:
+    """
+    งวดนี้ถูกล็อกถาวรแล้วหรือยัง
+
+    ล็อกแล้ว = ห้ามแก้ ห้ามทับ ห้ามลบ ไม่ว่าข้อมูลใหม่จะบอกอะไรก็ตาม
+    """
+    y = _year_of(period_or_year)
+    if not y.isdigit():
+        return False
+    now = (today or datetime.now()).year
+    return int(y) < now - LOCK_AFTER_YEARS
+
 
 def put(ticker: str, data: dict, market: str = None) -> dict:
     """
     เก็บงบของหุ้นตัวหนึ่งลงคลัง
 
-    คืน dict สรุปว่าเพิ่มกี่ค่า แก้กี่ค่า และมีการแก้งบย้อนหลังไหม
+    กฎเหล็กของคลังนี้
+    ------------------
+    1. **ไม่ลบ** ค่าที่เคยเก็บไว้ ไม่ว่ากรณีใด
+    2. **ไม่แก้** ค่าของงวดที่ถูกล็อกแล้ว (ปีที่ผ่านไปเกิน 1 ปี)
+    3. ค่าที่บริษัทแก้ย้อนหลัง เก็บแยกไว้เป็นประวัติ ไม่ทับของเดิม
+
+    ทำไมยึด "ค่าแรกที่บันทึก" เป็นค่าจริง
+    --------------------------------------
+    เพราะเป็นตัวเลขที่นักลงทุนเห็นจริงตอนนั้น
+    ถ้าเอาตัวเลขที่แก้ภายหลังมาแทน จะเกิดสิ่งที่เรียกว่า look-ahead bias
+    คือย้อนกลับไปทดสอบกลยุทธ์ด้วยข้อมูลที่ตอนนั้นยังไม่มีใครรู้
+    ผลทดสอบจะดูดีเกินจริง แล้วพอใช้กับของจริงจะไม่ได้ผลตามนั้น
+
+    ฐานข้อมูลระดับสถาบันเรียกวิธีนี้ว่า point-in-time database
+    และเป็นมาตรฐานสำหรับการทดสอบย้อนหลังที่เชื่อถือได้
+
+    คืน dict สรุปว่าเพิ่มกี่ค่า ปฏิเสธการแก้กี่ค่า และพบการแก้งบย้อนหลังไหม
     """
     market = market or market_of(ticker)
     fresh = to_long(ticker, data)
     if fresh.empty:
-        return {"เพิ่ม": 0, "แก้": 0, "แก้งบย้อนหลัง": 0, "ปีในคลัง": 0}
+        return {"เพิ่ม": 0, "ปฏิเสธการแก้": 0, "แก้งบย้อนหลัง": 0, "ปีในคลัง": 0}
 
-    added = changed = restated = 0
+    added = blocked = restated = updated = 0
     restate_rows = []
+    key = ["ticker", "งบ", "งวด", "บรรทัด"]
 
     for year, part in fresh.groupby(fresh["งวด"].map(_year_of)):
         f = _dir(market) / f"{year}.parquet"
-        old = pd.read_parquet(f) if f.exists() else pd.DataFrame(columns=COLS)
+        old = _read_shard(f)
 
         # แยกเฉพาะหุ้นตัวนี้ออกมาเทียบ ตัวอื่นในไฟล์ไม่ต้องแตะ
-        mine = old[old["ticker"] == str(ticker).upper()]
-        others = old[old["ticker"] != str(ticker).upper()]
+        mine = old[old["ticker"] == str(ticker).upper()] if len(old) \
+            else pd.DataFrame(columns=COLS)
+        others = old[old["ticker"] != str(ticker).upper()] if len(old) \
+            else pd.DataFrame(columns=COLS)
 
-        key = ["ticker", "งบ", "งวด", "บรรทัด"]
+        locked = is_locked(year)
+
         if mine.empty:
             merged = part
             added += len(part)
@@ -163,15 +358,15 @@ def put(ticker: str, data: dict, market: str = None) -> dict:
             cmp_ = mine.merge(part, on=key, how="outer",
                               suffixes=("_เดิม", "_ใหม่"), indicator=True)
 
-            new_only = cmp_["_merge"].eq("right_only")
-            added += int(new_only.sum())
+            added += int(cmp_["_merge"].eq("right_only").sum())
 
+            # ---- ตรวจว่าค่าเปลี่ยนไปจากที่เคยเก็บไหม ----
             both = cmp_["_merge"].eq("both")
             a = pd.to_numeric(cmp_.loc[both, "ค่า_เดิม"], errors="coerce")
             b = pd.to_numeric(cmp_.loc[both, "ค่า_ใหม่"], errors="coerce")
             denom = a.abs().where(a.abs() > 0, 1.0)
             diff = ((b - a).abs() / denom) > RESTATE_TOL
-            changed += int(diff.sum())
+
             if diff.any():
                 restated += int(diff.sum())
                 rr = cmp_.loc[both][diff.values]
@@ -180,42 +375,60 @@ def put(ticker: str, data: dict, market: str = None) -> dict:
                         "ticker": r["ticker"], "งบ": r["งบ"], "งวด": r["งวด"],
                         "บรรทัด": r["บรรทัด"], "ค่าเดิม": r["ค่า_เดิม"],
                         "ค่าใหม่": r["ค่า_ใหม่"],
+                        "งวดถูกล็อก": bool(locked),
                         "พบเมื่อ": datetime.now().strftime("%Y-%m-%d")})
 
-            # ---- ค่าใหม่ทับค่าเดิมเสมอเมื่อมีทั้งคู่ ----
+            # ---- ตัดสินว่าจะใช้ค่าไหน ----
             #
-            # เพราะการปรับปรุงงบย้อนหลังคือ "ตัวเลขที่ถูกต้องกว่า"
-            # แต่ค่าที่เคยเก็บไว้แล้วและรอบใหม่ไม่มี ต้อง **เก็บไว้เหมือนเดิม**
+            # งวดที่ล็อกแล้ว  -> ใช้ค่าเดิมเสมอ ค่าใหม่แค่บันทึกไว้เป็นประวัติ
+            # งวดที่ยังไม่ล็อก -> ใช้ค่าใหม่ เพราะตัวเลขอาจยังไม่ครบตอนแรก
+            #
+            # ทั้งสองกรณี ค่าที่เคยมีแต่รอบใหม่ไม่มี จะถูกเก็บไว้เหมือนเดิม
             # นี่คือหัวใจของทั้งระบบ — ปีที่ Yahoo เลิกให้แล้วต้องไม่หายไป
-            keep_old = cmp_["_merge"].eq("left_only")
+            if locked:
+                blocked += int(diff.sum())
+                use_new = cmp_["_merge"].eq("right_only")
+            else:
+                updated += int(diff.sum())
+                use_new = cmp_["_merge"].ne("left_only")
+
+            take_old = ~use_new
             merged = pd.concat([
-                cmp_.loc[keep_old, key].assign(
-                    **{"ค่า": cmp_.loc[keep_old, "ค่า_เดิม"],
-                       "บันทึกเมื่อ": cmp_.loc[keep_old, "บันทึกเมื่อ_เดิม"]}),
-                cmp_.loc[~keep_old, key].assign(
-                    **{"ค่า": cmp_.loc[~keep_old, "ค่า_ใหม่"],
-                       "บันทึกเมื่อ": cmp_.loc[~keep_old, "บันทึกเมื่อ_ใหม่"]}),
+                cmp_.loc[take_old, key].assign(
+                    **{"ค่า": cmp_.loc[take_old, "ค่า_เดิม"],
+                       "บันทึกเมื่อ": cmp_.loc[take_old, "บันทึกเมื่อ_เดิม"]}),
+                cmp_.loc[use_new, key].assign(
+                    **{"ค่า": cmp_.loc[use_new, "ค่า_ใหม่"],
+                       "บันทึกเมื่อ": cmp_.loc[use_new, "บันทึกเมื่อ_ใหม่"]}),
             ], ignore_index=True)[COLS]
 
         # กรองตารางว่างออกก่อนรวม — pandas เตือนว่าอนาคตจะเปลี่ยนพฤติกรรม
         # การรวมตารางว่างเข้าไปด้วย ซึ่งอาจทำให้ชนิดข้อมูลเพี้ยน
         keep = [t for t in (others, merged) if t is not None and len(t)]
         out = pd.concat(keep, ignore_index=True) if keep else merged
-        out[COLS].to_parquet(f, compression="zstd", index=False)
+
+        # ห้ามแถวหายเด็ดขาด — ถ้าจำนวนลดลงแปลว่ามีบั๊ก ให้ยกเลิกการเขียน
+        _write_shard(f, out[COLS], before=len(old))
 
     if restate_rows:
         _log_restatements(market, pd.DataFrame(restate_rows))
 
-    return {"เพิ่ม": added, "แก้": changed, "แก้งบย้อนหลัง": restated,
-            "ปีในคลัง": len(years_of(ticker, market))}
+    return {"เพิ่ม": added, "ปฏิเสธการแก้": blocked, "อัปเดตงวดที่ยังไม่ล็อก": updated,
+            "แก้งบย้อนหลัง": restated, "ปีในคลัง": len(years_of(ticker, market))}
 
 
 def _log_restatements(market: str, df: pd.DataFrame):
     f = _dir(market) / "การแก้ไขงบย้อนหลัง.parquet"
+    n_before = 0
     if f.exists():
-        df = pd.concat([pd.read_parquet(f), df], ignore_index=True)
+        old = pd.read_parquet(f)
+        n_before = len(old)
+        df = pd.concat([old, df], ignore_index=True)
         df = df.drop_duplicates(["ticker", "งบ", "งวด", "บรรทัด", "ค่าใหม่"])
-    df.to_parquet(f, compression="zstd", index=False)
+    # ประวัติการแก้งบก็ห้ามหายเช่นกัน
+    tmp = f.with_suffix(f.suffix + ".กำลังเขียน")
+    df.to_parquet(tmp, compression="zstd", index=False)
+    os.replace(tmp, f)
 
 
 # ---------------------------------------------------------------------------
@@ -412,13 +625,15 @@ def build_from_cache(progress=None) -> dict:
         allrows = pd.concat(parts, ignore_index=True)
         for year, part in allrows.groupby(allrows["งวด"].map(_year_of)):
             f = _dir(m) / f"{year}.parquet"
-            if f.exists():
-                old = pd.read_parquet(f)
+            old = _read_shard(f)
+            n_before = len(old)
+            if n_before:
                 part = pd.concat([old, part], ignore_index=True)
-                # ของใหม่ทับของเก่าเมื่อคีย์ซ้ำ
+                # ค่าที่เก็บไว้ก่อนชนะเสมอ (keep="first")
+                # เพราะคลังนี้ยึดหลัก "ค่าแรกที่บันทึกคือค่าจริง"
                 part = part.drop_duplicates(
-                    ["ticker", "งบ", "งวด", "บรรทัด"], keep="last")
-            part.to_parquet(f, compression="zstd", index=False)
+                    ["ticker", "งบ", "งวด", "บรรทัด"], keep="first")
+            _write_shard(f, part[COLS], before=n_before)
         summary[m] = {"หุ้น": allrows["ticker"].nunique(),
                       "ค่า": len(allrows),
                       "ปีงบ": sorted(allrows["งวด"].map(_year_of).unique())}
@@ -440,7 +655,42 @@ def main() -> int:
     p.add_argument("--ความครอบคลุม", dest="cov", metavar="MARKET",
                    choices=["thai", "us"])
     p.add_argument("--การแก้ไขงบ", dest="rest", action="store_true")
+    p.add_argument("--ตรวจสอบ", dest="verify", action="store_true",
+                   help="ตรวจว่าข้อมูลยังครบถ้วน ไม่มีอะไรหายหรือถูกแก้")
+    p.add_argument("--สำรอง", dest="backup", metavar="ปลายทาง",
+                   help="คัดลอกคลังไปเก็บที่อื่น เช่น ~/Library/CloudStorage/...")
     a = p.parse_args()
+
+    if a.verify:
+        v = verify()
+        print(f"\n{'='*72}\n  ตรวจสอบความครบถ้วนของคลัง\n{'='*72}")
+        if v.empty:
+            print("  ยังไม่มีคลัง")
+        else:
+            print(v.to_string(index=False))
+            bad = v[v["สถานะ"].str.startswith(("❌", "⚠️"))]
+            print(f"\n  ครบถ้วน {len(v)-len(bad)}/{len(v)} ไฟล์")
+            if len(bad):
+                print("\n  ⚠️ มีไฟล์ที่ต้องดู — ถ้าเป็น 'แถวหาย' หรือ 'ไฟล์เสียหาย'")
+                print("     ให้กู้จาก git ทันที :  git checkout -- data/archive")
+            else:
+                print("  ไม่มีข้อมูลหายหรือถูกแก้นอกระบบ")
+        print()
+        return 0
+
+    if a.backup:
+        import shutil
+        dest = Path(a.backup).expanduser() / "คลังงบการเงิน"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d")
+        target = dest / stamp
+        print(f"\n  สำรองคลังไปที่ {target}")
+        shutil.copytree(ARCHIVE_DIR, target, dirs_exist_ok=True)
+        n = sum(1 for _ in target.rglob("*.parquet"))
+        mb = sum(f.stat().st_size for f in target.rglob("*")) / 1e6
+        print(f"  คัดลอกแล้ว {n} ไฟล์ · {mb:.1f} MB")
+        print("  สำเนาเก่าไม่ถูกลบ — เก็บไว้เป็นชั้นย้อนกลับ\n")
+        return 0
 
     if a.build:
         print("\n  สร้างคลังจากแคชที่มีอยู่ในเครื่อง\n")
