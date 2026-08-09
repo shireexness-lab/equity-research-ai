@@ -945,16 +945,6 @@ if MODE == HOME:
     #
     # selectbox ของ Streamlit กรองรายการให้ทันทีที่พิมพ์
     # ค้นได้ทั้งชื่อย่อและชื่อบริษัท และไม่มีการเสนอข้อมูลจากเครื่องผู้ใช้
-    hc1, hc2 = st.columns([4, 1])
-    with hc1:
-        if OPTIONS:
-            st.selectbox(
-                "เลือกหุ้น", OPTIONS, index=None, key="home_pick",
-                label_visibility="collapsed",
-                placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL · ปตท · ธนาคาร")
-        else:
-            st.warning("โหลดรายชื่อหุ้นไม่สำเร็จ")
-
     def _go_search():
         pick = st.session_state.get("home_pick")
         if not pick:
@@ -963,6 +953,18 @@ if MODE == HOME:
             pick, str(pick).split(" ")[0]).upper()
         st.session_state["mode"] = M_ONE
         st.session_state["ran"] = True
+
+    hc1, hc2 = st.columns([4, 1])
+    with hc1:
+        if OPTIONS:
+            # on_change = เลือกหุ้นเสร็จ (กด Enter หรือกดที่รายการ)
+            # ไปหน้าวิเคราะห์ทันที ไม่ต้องกดปุ่ม "วิเคราะห์" ซ้ำ
+            st.selectbox(
+                "เลือกหุ้น", OPTIONS, index=None, key="home_pick",
+                label_visibility="collapsed", on_change=_go_search,
+                placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL · ปตท · ธนาคาร")
+        else:
+            st.warning("โหลดรายชื่อหุ้นไม่สำเร็จ")
 
     hc2.button("วิเคราะห์", type="primary", use_container_width=True,
                on_click=_go_search, disabled=not OPTIONS)
@@ -2387,6 +2389,11 @@ if _last_scope.get("snap_key"):
 # จะสลับเป็นโหมดพิมพ์เองก็ต่อเมื่อหาหุ้นตัวนั้นในรายชื่อไม่เจอจริง ๆ
 # ---------------------------------------------------------------------------
 
+def _run_now():
+    """เลือกหุ้นเสร็จแล้วให้เริ่มวิเคราะห์ทันที ไม่ต้องกดปุ่มซ้ำ"""
+    st.session_state["ran"] = True
+
+
 # แผนที่ย้อนกลับ ticker -> ข้อความในรายชื่อ เพื่อเลือกตัวที่ถูกล่วงหน้าได้
 _REV = {}
 for _o in OPTIONS:
@@ -2405,9 +2412,10 @@ if bool(JUMP) and not _jump_in_list:
 c1, c2 = st.columns([3, 1])
 with c1:
     if manual or not OPTIONS:
+        # กด Enter ในช่องพิมพ์ = เริ่มวิเคราะห์เลย เหมือนกดปุ่ม
         ticker = st.text_input("ใส่ชื่อย่อหุ้น", value=JUMP or "AAPL",
                                key=f"tk_{JUMP or 'default'}",
-                               autocomplete="off",
+                               autocomplete="off", on_change=_run_now,
                                placeholder="เช่น AAPL, MSFT, PTT.BK",
                                label_visibility="collapsed").strip().upper()
     else:
@@ -2419,8 +2427,15 @@ with c1:
             default = OPTIONS.index("AAPL — Apple Inc.")
         else:
             default = 0
+        # on_change = พอเลือกหุ้นเสร็จ (กด Enter หรือกดที่รายการ)
+        # ให้เริ่มวิเคราะห์ทันที ไม่ต้องกดปุ่มซ้ำอีกครั้ง
+        #
+        # Streamlit ไม่มีเหตุการณ์ "กด Enter" ให้ดักโดยตรง
+        # แต่การเลือกค่าใน selectbox ทำให้เกิดการเปลี่ยนค่าเสมอ
+        # ซึ่งจับได้ด้วย on_change และให้ผลเหมือนกันทุกประการ
         pick = st.selectbox("เลือกหุ้น", OPTIONS, index=default,
-                            label_visibility="collapsed",
+                            label_visibility="collapsed", key="one_pick",
+                            on_change=_run_now,
                             placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL, ปตท, ธนาคาร")
         ticker = LOOKUP.get(pick, str(pick).split(" ")[0]).upper()
 with c2:
@@ -2508,11 +2523,23 @@ if v.get("หมายเหตุวิธีประเมิน"):
 
 ig = v.get("อัตราโตที่ตลาดคาดหวัง")
 if ig is not None:
+    # CAGR FCF คำนวณไม่ได้เมื่อกระแสเงินสดปีแรกติดลบ (สูตรรากที่ n ใช้ไม่ได้)
+    # ซึ่งเกิดบ่อยกับบริษัทที่เพิ่งฟื้นตัว เช่น AOT ช่วงหลังโควิด
+    # ถ้าไม่ดักไว้ ทั้งหน้าจะพังด้วย TypeError เพราะเอา None ไปจัดรูปแบบทศนิยม
     g_hist = R["summary"].get("CAGR FCF (%)")
-    st.info(f"**ราคาวันนี้กำลังบอกอะไร** — ที่ราคา {price:,.2f} {cur} "
-            f"ตลาดคาดว่ากระแสเงินสดอิสระจะโตปีละ **{ig:+.1%}** ติดต่อกัน "
-            f"{v['years1']} ปี  \nขณะที่ย้อนหลัง {v['ปีข้อมูล']} ปี "
-            f"บริษัททำได้จริง **{g_hist:.1f}%** ต่อปี")
+    msg = (f"**ราคาวันนี้กำลังบอกอะไร** — ที่ราคา {price:,.2f} {cur} "
+           f"ตลาดคาดว่ากระแสเงินสดอิสระจะโตปีละ **{ig:+.1%}** ติดต่อกัน "
+           f"{v['years1']} ปี  \n")
+    try:
+        _g = float(g_hist)
+        if not np.isfinite(_g):          # กัน nan / inf ที่หลุดมาจากการหาร
+            raise ValueError("ค่าไม่ใช่ตัวเลขที่ใช้ได้")
+        msg += (f"ขณะที่ย้อนหลัง {v['ปีข้อมูล']} ปี "
+                f"บริษัททำได้จริง **{_g:.1f}%** ต่อปี")
+    except (TypeError, ValueError):
+        msg += ("ส่วนอัตราโตย้อนหลังเทียบไม่ได้ เพราะกระแสเงินสดอิสระ"
+                "ปีแรกติดลบ จึงคำนวณอัตราโตทบต้นไม่ได้")
+    st.info(msg)
 
 # ---------- ปุ่มดาวน์โหลด PDF ----------
 d1, d2 = st.columns([1, 3])
