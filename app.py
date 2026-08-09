@@ -337,7 +337,8 @@ SECTION_MARK = "§ "
 
 
 def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_year=True,
-               max_height=None, link_cols=(), sort_cols=(),
+               max_height=None, link_cols=(), link_target="_blank",
+               link_headers=False, sort_cols=(),
                cur_sort=None, cur_asc=True, fit=False, left_cols=(),
                dec_cols=None, sign_cols=(), sign_mask=None, dec_rows=None):
     """
@@ -373,6 +374,13 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
             cls = "sh cur" if is_cur else "sh"
             h.append(f"<th><a class='{cls}' target='_self' "
                      f"href='?sort={quote(str(c))}&order={nxt}'>{c}{arrow}</a></th>")
+        elif link_headers:
+            # ---- หัวตารางเป็นชื่อหุ้น กดแล้วไปวิเคราะห์รายตัว ----
+            #
+            # ใช้กับตารางเปรียบเทียบ ซึ่งวางหุ้นเป็น "คอลัมน์" ไม่ใช่ "แถว"
+            # link_cols ใช้ไม่ได้ เพราะมันทำลิงก์ให้เฉพาะค่าในช่องข้อมูล
+            h.append(f"<th><a class='tk' target='_blank' rel='noopener' "
+                     f"href='?t={quote(str(c))}'>{c}</a></th>")
         else:
             h.append(f"<th{' class=l' if c in left_cols else ''}>{c}</th>")
     h.append("</tr></thead><tbody>")
@@ -413,9 +421,18 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
                 except (TypeError, ValueError):
                     pass
             if c in link_cols and val != "—":
-                # target="_self" = เปิดในแท็บเดิม ไม่เด้งแท็บใหม่
-                # เปิดแท็บใหม่ เพื่อไม่ให้ผลคัดกรองในแท็บเดิมหายไป
-                val = (f"<a class='tk' target='_blank' rel='noopener' "
+                # ---- เปิดแท็บเดิม หรือแท็บใหม่ ----
+                #
+                # การกดลิงก์ทำให้เบราว์เซอร์โหลดหน้าใหม่เสมอ = session เดิมถูกทิ้ง
+                #
+                #   ตารางที่อ่านจากไฟล์ (Strong Buy · ปันผล · ผลคัดกรองที่บันทึกไว้)
+                #     -> เปิดแท็บเดิมได้ เพราะกดกลับมาแล้วระบบอ่านไฟล์ใหม่ให้เอง
+                #
+                #   ตารางที่คำนวณสด ๆ ในหน่วยความจำ (ผลวิเคราะห์ลึกรอบนี้)
+                #     -> ต้องเปิดแท็บใหม่ ไม่งั้นผลที่รอมาหลายนาทีหายทันที
+                _tgt = ("_self" if link_target == "_self"
+                        else "_blank' rel='noopener")
+                val = (f"<a class='tk' target='{_tgt}' "
                        f"href='?t={str(df.loc[name, c]).strip()}'>{val}</a>")
             h.append(f"<td>{val}</td>")
         h.append("</tr>")
@@ -865,6 +882,7 @@ def deep_changes_panel(market: str):
         show.index = [str(i) for i in range(1, len(show) + 1)]
         html_table(show, first_col="ลำดับ", trim_year=False, fit=True,
                    max_height=460, left_cols=("ชื่อบริษัท", "การเปลี่ยนแปลง"),
+                   link_cols=("ticker",), link_target="_self",
                    sign_cols=("ส่วนลดขยับ",))
 
 
@@ -917,22 +935,40 @@ if MODE == HOME:
     st.divider()
 
     # ---------- ช่องค้นหา — ทางลัดที่คนส่วนใหญ่อยากได้ ----------
-    st.markdown("##### เริ่มจากพิมพ์ชื่อหุ้นที่สนใจ")
+    st.markdown("##### เริ่มจากเลือกหุ้นที่สนใจ")
+
+    # ---- ใช้ selectbox เสมอ ไม่ใช่ text_input ----
+    #
+    # text_input ทำให้เบราว์เซอร์เสนอ "ข้อมูลที่เคยกรอก" ขึ้นมาเอง
+    # ซึ่งบนมือถือจะดึงรายชื่อจากสมุดโทรศัพท์มาแสดง — ไม่เกี่ยวกับหุ้นเลย
+    # และไม่มีรายชื่อหุ้นให้เลือก ต้องจำชื่อย่อเอาเอง
+    #
+    # selectbox ของ Streamlit กรองรายการให้ทันทีที่พิมพ์
+    # ค้นได้ทั้งชื่อย่อและชื่อบริษัท และไม่มีการเสนอข้อมูลจากเครื่องผู้ใช้
     hc1, hc2 = st.columns([4, 1])
-    hc1.text_input("ชื่อหุ้น", key="home_q", label_visibility="collapsed",
-                   placeholder="เช่น  PTT.BK   KBANK.BK   AAPL   MSFT")
+    with hc1:
+        if OPTIONS:
+            st.selectbox(
+                "เลือกหุ้น", OPTIONS, index=None, key="home_pick",
+                label_visibility="collapsed",
+                placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL · ปตท · ธนาคาร")
+        else:
+            st.warning("โหลดรายชื่อหุ้นไม่สำเร็จ")
 
     def _go_search():
-        t = str(st.session_state.get("home_q", "")).strip().upper()
-        if t:
-            st.session_state["jump"] = t
-            st.session_state["mode"] = M_ONE
-            st.session_state["ran"] = True
+        pick = st.session_state.get("home_pick")
+        if not pick:
+            return
+        st.session_state["jump"] = LOOKUP.get(
+            pick, str(pick).split(" ")[0]).upper()
+        st.session_state["mode"] = M_ONE
+        st.session_state["ran"] = True
 
     hc2.button("วิเคราะห์", type="primary", use_container_width=True,
-               on_click=_go_search)
-    st.caption("หุ้นไทยต้องมี **.BK** ต่อท้ายเสมอ เช่น `CPALL.BK` · "
-               "หุ้นสหรัฐใส่ชื่อย่อได้เลย")
+               on_click=_go_search, disabled=not OPTIONS)
+    if OPTIONS:
+        st.caption(f"ค้นหาได้ **{len(OPTIONS):,} ตัว** — "
+                   "พิมพ์ตัวอักษรไม่กี่ตัวแล้วรายชื่อจะกรองให้เอง")
 
     st.divider()
     st.markdown("##### หรือเลือกจากสิ่งที่ระบบทำได้")
@@ -1080,8 +1116,10 @@ if MODE.startswith("💰"):
             show = sort_controls(show, key=f"div_{dmarket}",
                                  default="อีกกี่วัน", asc=True)
             show.index = [str(i) for i in range(1, len(show) + 1)]
+            st.caption("**กดที่ชื่อหุ้น** เพื่อเปิดวิเคราะห์รายตัวของตัวนั้น")
             html_table(show, first_col="ลำดับ", trim_year=False, fit=True,
                        max_height=620,
+                       link_cols=("ticker",), link_target="_self",
                        left_cols=("วัน XD", "ที่มาของวัน", "รอบการจ่าย",
                                   "กลุ่ม", "ชื่อบริษัท"),
                        dec_cols={"อีกกี่วัน": 0, "จ่ายกี่ครั้ง/ปี": 0,
@@ -1112,6 +1150,7 @@ if MODE.startswith("💰"):
                 hs.index = [str(i) for i in range(1, len(hs) + 1)]
                 html_table(hs, first_col="อันดับ", trim_year=False, fit=True,
                            max_height=460,
+                           link_cols=("ticker",), link_target="_self",
                            left_cols=("รอบการจ่าย", "กลุ่ม", "ชื่อบริษัท"),
                            dec_cols={"จ่ายกี่ครั้ง/ปี": 0,
                                      "อัตราจ่ายจากกำไร (%)": 0})
@@ -1320,8 +1359,10 @@ if MODE.startswith("🏆"):
                 + (f" · ข้อมูล ≥ {min_yr} ปี" if min_yr else "")
                 + "  \nถ้าตัวเลขนี้น้อยกว่าที่คาด ให้ดูว่าไฟล์ผลมีกี่ตัว "
                   "(บรรทัดบนสุด) และเลือกคำแนะนำครบทุกระดับหรือยัง")
+            st.caption("**กดที่ชื่อหุ้น** เพื่อเปิดวิเคราะห์รายตัวของตัวนั้น")
             html_table(show, first_col="อันดับ", trim_year=False, fit=True,
                        max_height=620, sign_cols=("ส่วนลด (%)",),
+                       link_cols=("ticker",), link_target="_self",
                        left_cols=("คำแนะนำ", "โซนราคา", "ความน่าเชื่อถือ",
                                   "กลุ่ม", "ชื่อบริษัท"),
                        dec_cols={"คะแนนรวม": 1, "ปีข้อมูล": 0,
@@ -1809,7 +1850,7 @@ if MODE.startswith("คัดกรอง"):
                            if "YoY" in c or "QoQ" in c)
             html_table(show, first_col="อันดับ", trim_year=False,
                        max_height=640, link_cols=("ticker",),
-                       sign_cols=g_cols,
+                       link_target="_self", sign_cols=g_cols,
                        left_cols=("ชื่อบริษัท", "กลุ่ม", "งบไตรมาสล่าสุด", "⚠️"))
             # ---------- ดึงการเติบโตรายไตรมาสเพิ่ม (กดเอง) ----------
             have_q = any(c in res.columns for c in GROWTH_COLS)
@@ -2049,6 +2090,7 @@ if MODE.startswith("เปรียบเทียบ"):
     cmp_list = [LOOKUP.get(p, str(p).split(" ")[0]) for p in picks]
 
     extra = st.text_input("หรือพิมพ์เพิ่มเอง (คั่นด้วยเว้นวรรค)",
+                          autocomplete="off",
                           value=" ".join(handoff) if handoff else "",
                           placeholder="เช่น AAPL MSFT PTT.BK")
     cmp_list += [x.strip().upper() for x in extra.split() if x.strip()]
@@ -2109,10 +2151,14 @@ if MODE.startswith("เปรียบเทียบ"):
             st.caption(f"**{n_rows} หัวข้อ** ใน {len(secs)} หมวด · "
                        "ทุกตัวเลขคำนวณจากงบการเงินย้อนหลัง ไม่ใช่ค่าสรุปสำเร็จรูป "
                        "· หัวตารางตรึงไว้ เลื่อนลงได้โดยยังเห็นชื่อหุ้น")
+            st.caption("**กดที่ชื่อหุ้นบนหัวตาราง** เพื่อเปิดวิเคราะห์รายตัว "
+                       "(เปิดแท็บใหม่ ผลเปรียบเทียบในแท็บนี้ไม่หาย)")
             html_table(full, first_col="หัวข้อ", trim_year=False, fit=True,
+                       link_headers=True,
                        max_height=720)
         else:
-            html_table(res["table"], first_col="หัวข้อ", trim_year=False, fit=True)
+            html_table(res["table"], first_col="หัวข้อ", trim_year=False,
+                       fit=True, link_headers=True)
 
         for tk, err in res["errors"]:
             st.caption(f"⚠️ {tk} — {err}")
@@ -2328,22 +2374,51 @@ if _last_scope.get("snap_key"):
     _bk[1].caption(f"ผลคัดกรองล่าสุด **{_last_scope['snap_key']}** "
                    "ถูกบันทึกไว้แล้ว — กดกลับไปได้เลย ไม่ต้องคัดกรองใหม่")
 
+# ---------------------------------------------------------------------------
+# ช่องเลือกหุ้น
+#
+# ค่าเริ่มต้นคือ "เลือกจากรายชื่อ" เสมอ ไม่ว่ามาจากทางไหน
+#
+# เดิมตั้งไว้ว่า ถ้ามาจากการกดชื่อหุ้นในตาราง (JUMP) ให้สลับไปโหมดพิมพ์เอง
+# ซึ่งทำให้เจอช่องพิมพ์ข้อความเปล่า ๆ แล้วเบราว์เซอร์บนมือถือเสนอ
+# รายชื่อจากสมุดโทรศัพท์ขึ้นมาแทนรายชื่อหุ้น
+#
+# ตอนนี้ถ้ามี JUMP จะไปเลือกตัวนั้นในรายชื่อให้เลย
+# จะสลับเป็นโหมดพิมพ์เองก็ต่อเมื่อหาหุ้นตัวนั้นในรายชื่อไม่เจอจริง ๆ
+# ---------------------------------------------------------------------------
+
+# แผนที่ย้อนกลับ ticker -> ข้อความในรายชื่อ เพื่อเลือกตัวที่ถูกล่วงหน้าได้
+_REV = {}
+for _o in OPTIONS:
+    _REV.setdefault(LOOKUP.get(_o, str(_o).split(" ")[0]).upper(), _o)
+
+_jump_in_list = bool(JUMP) and JUMP.upper() in _REV
+_need_manual = (not OPTIONS) or (bool(JUMP) and not _jump_in_list)
+
 manual = st.toggle("พิมพ์ ticker เอง (สำหรับหุ้นที่ไม่มีในรายชื่อ)",
-                   value=bool(JUMP) or not OPTIONS,
-                   help="รายชื่อหุ้นไทยเป็นรายชื่อตั้งต้น ไม่ครบทุกตัว "
-                        "ถ้าหาไม่เจอให้เปิดสวิตช์นี้แล้วพิมพ์เอง")
+                   value=_need_manual, key="manual_tk",
+                   help="ปกติไม่ต้องเปิด — ให้เลือกจากรายชื่อจะได้ไม่พิมพ์ผิด "
+                        "เปิดเฉพาะตอนหาหุ้นที่ต้องการในรายชื่อไม่เจอ")
+if bool(JUMP) and not _jump_in_list:
+    st.caption(f"ไม่พบ **{JUMP}** ในรายชื่อตั้งต้น จึงเปิดโหมดพิมพ์เองให้อัตโนมัติ")
 
 c1, c2 = st.columns([3, 1])
 with c1:
     if manual or not OPTIONS:
         ticker = st.text_input("ใส่ชื่อย่อหุ้น", value=JUMP or "AAPL",
                                key=f"tk_{JUMP or 'default'}",
+                               autocomplete="off",
                                placeholder="เช่น AAPL, MSFT, PTT.BK",
                                label_visibility="collapsed").strip().upper()
     else:
         # selectbox ของ Streamlit กรองรายชื่อให้ทันทีที่พิมพ์
         # (ค้นได้ทั้งชื่อย่อและชื่อบริษัท เช่น พิมพ์ "ปตท" หรือ "Apple")
-        default = OPTIONS.index("AAPL — Apple Inc.") if "AAPL — Apple Inc." in OPTIONS else 0
+        if _jump_in_list:
+            default = OPTIONS.index(_REV[JUMP.upper()])
+        elif "AAPL — Apple Inc." in OPTIONS:
+            default = OPTIONS.index("AAPL — Apple Inc.")
+        else:
+            default = 0
         pick = st.selectbox("เลือกหุ้น", OPTIONS, index=default,
                             label_visibility="collapsed",
                             placeholder="พิมพ์ชื่อย่อหรือชื่อบริษัท เช่น AAPL, ปตท, ธนาคาร")
@@ -2804,6 +2879,7 @@ with t4:
             for i in range(int(n_seg)):
                 c = st.columns([2, 1.4, 1, 1.2])
                 nm = c[0].text_input("ชื่อธุรกิจ", key=f"sg_n{i}",
+                                     autocomplete="off",
                                      placeholder=f"ธุรกิจที่ {i+1}")
                 base_v = c[1].number_input("ตัวเลขฐาน (ล้าน)", value=0.0,
                                            step=100.0, key=f"sg_v{i}",
