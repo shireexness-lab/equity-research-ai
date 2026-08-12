@@ -768,6 +768,56 @@ def build_html(data, S, R, v, b, ext=None) -> str:
           <li><b>ต้องดูเอง</b> ไม่มีข้อมูลให้ประเมินอัตโนมัติ</li>
         </ul></div>""")
 
+    # ---------- โมเดลคลาสสิกที่ตีพิมพ์แล้ว ----------
+    #
+    # แยกหัวข้อจากคะแนนของระบบเอง เพื่อให้ผู้อ่านแยกออกว่า
+    # อันไหนเป็นเกณฑ์ที่เราตั้งเอง อันไหนเป็นมาตรฐานที่วงการยอมรับ
+    dz = ext.get("distress")
+    if dz:
+        parts.append(f"<h2>{n}. โมเดลมาตรฐานสากล 4 ตัว</h2>")
+        n += 1
+        parts.append("<div class='note'>โมเดลในหัวข้อนี้ <b>ไม่ใช่สูตรที่ระบบคิดเอง</b> "
+                     "แต่เป็นงานวิจัยที่ตีพิมพ์และถูกตรวจสอบมาหลายสิบปี "
+                     "ระบบเพียงใส่ตัวเลขลงสูตร · ขาดข้อมูลจะไม่คำนวณและบอกว่าขาดอะไร</div>")
+
+        _rows = []
+        for _k, _lbl in (("altman", "Altman Z-Score (ความเสี่ยงล้มละลาย)"),
+                         ("piotroski", "Piotroski F-Score (คุณภาพงบ 9 ข้อ)"),
+                         ("beneish", "Beneish M-Score (ร่องรอยตกแต่งบัญชี)"),
+                         ("ohlson", "Ohlson O-Score (โอกาสล้มละลาย)")):
+            m = dz.get(_k) or {}
+            if not m.get("ใช้ได้"):
+                _rows.append((_lbl, f"ใช้ไม่ได้ — {esc(m.get('เหตุผล', '-'))}"))
+                continue
+            if _k == "piotroski":
+                val = f"{m['คะแนน']}/{m['เต็ม']}  ({m['ระดับ']})"
+            elif _k == "ohlson":
+                val = f"{m['ความน่าจะเป็น (%)']:.1f}%  ({m['ระดับ']})"
+            else:
+                val = f"{m['คะแนน']:.2f}  ({m['ระดับ']})"
+            _rows.append((_lbl, f"{val} · {esc(m['คำอธิบาย'])}"))
+        parts.append(kv_html(_rows))
+
+        _pf = dz.get("piotroski") or {}
+        if _pf.get("ใช้ได้") and _pf.get("รายข้อ"):
+            parts.append("<h3>Piotroski F-Score รายข้อ</h3>")
+            _pr = []
+            for it in _pf["รายข้อ"]:
+                mark = ("ผ่าน" if it["ผ่าน"] else
+                        ("วัดไม่ได้" if it["ผ่าน"] is None else "ไม่ผ่าน"))
+                _pr.append((it["ข้อ"], f"{mark} · {esc(str(it['รายละเอียด']))}"))
+            parts.append(kv_html(_pr))
+
+        _sm = dz.get("สรุป") or {}
+        if _sm.get("ขัดแย้งกัน"):
+            parts.append("<div class='warn'>"
+                         + esc(_sm["ขัดแย้งกัน"].replace("**", "")) + "</div>")
+        parts.append("<div class='warn'><b>อ่านผลอย่างไรให้ถูก</b> — "
+                     "โมเดลเหล่านี้บอกรูปแบบทางสถิติ ไม่ได้บอกอนาคต "
+                     "Beneish ที่ขึ้นเตือนไม่ได้แปลว่าบริษัทโกง และ Altman ที่ต่ำ"
+                     "ไม่ได้แปลว่าจะล้มแน่นอน <b>ใช้เป็นธงให้ไปตรวจสอบต่อ</b> "
+                     "ไม่ใช่ข้อสรุป</div>")
+
     # ---------- พยากรณ์ 10 ปี (Module 7) ----------
     fc = ext.get("forecast")
     if fc and fc.get("ใช้ได้"):
@@ -941,6 +991,11 @@ def extras(data, R, v, b, rf=None) -> dict:
         out["quality"] = QL.assess_all(data, R, v=v, rf=rf)
     except Exception as e:
         out["quality_error"] = f"{type(e).__name__}: {e}"
+    try:
+        import distress as DT
+        out["distress"] = DT.assess(data)
+    except Exception as e:
+        out["distress_error"] = f"{type(e).__name__}: {e}"
     try:
         import news_ai as NA
         out["news"] = NA.analyze(data.get("ticker", ""), limit=25)

@@ -57,7 +57,9 @@ DEEP_KEY = "deep-{market}"
 KEEP = ["ticker", "ชื่อบริษัท", "คำแนะนำ", "คะแนนรวม", "ความมั่นใจ (%)",
         "ราคา", "มูลค่าที่ประเมินได้", "ส่วนลด (%)", "โซน",
         "ความน่าเชื่อถือ", "คะแนนความน่าเชื่อถือ", "ปีข้อมูล",
-        "Buffett", "คุณภาพ", "ความเสี่ยง", "กลุ่ม", "วิเคราะห์เมื่อ", "ปัญหา"]
+        "Buffett", "คุณภาพ", "ความเสี่ยง",
+        "Altman Z", "Piotroski F", "Beneish M", "โอกาสล้มละลาย (%)",
+        "กลุ่ม", "วิเคราะห์เมื่อ", "ปัญหา"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +139,7 @@ def analyze_one(ticker: str, rf=None) -> dict:
         import forecast as FC
         import news_ai as NA
         import quality as QL
+        import distress as DT
         import recommend as RC
         import risk as RK
 
@@ -185,6 +188,24 @@ def analyze_one(ticker: str, rf=None) -> dict:
             "ความเสี่ยง": rk.get("คะแนนรวม"),
             "กลุ่ม": (data.get("info", {}) or {}).get("sector", "-"),
         })
+
+        # ---- 4 โมเดลคลาสสิก ----
+        #
+        # คำนวณจากข้อมูลที่ดึงมาแล้ว ไม่ต้องยิงเน็ตเพิ่ม จึงแทบไม่เสียเวลา
+        # ตัวไหนใช้ไม่ได้ (ธนาคาร หรือข้อมูลไม่ครบ) จะเว้นว่าง ไม่ใส่ค่าแทน
+        try:
+            dz = DT.assess(data)
+            if dz["altman"]["ใช้ได้"]:
+                row["Altman Z"] = dz["altman"]["คะแนน"]
+            if dz["piotroski"]["ใช้ได้"]:
+                row["Piotroski F"] = dz["piotroski"]["คะแนน"]
+            if dz["beneish"]["ใช้ได้"]:
+                row["Beneish M"] = dz["beneish"]["คะแนน"]
+            if dz["ohlson"]["ใช้ได้"]:
+                row["โอกาสล้มละลาย (%)"] = dz["ohlson"]["ความน่าจะเป็น (%)"]
+        except Exception:
+            # โมเดลคลาสสิกพังต้องไม่ทำให้การวิเคราะห์ทั้งตัวล้มเหลว
+            pass
     except Exception as e:
         row["ปัญหา"] = f"{type(e).__name__}: {str(e)[:70]}"
     return row

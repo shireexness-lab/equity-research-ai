@@ -1310,10 +1310,22 @@ if MODE.startswith("🏆"):
             (cnt.loc["Strong Buy", "จำนวน"] if "Strong Buy" in cnt.index else 0)
             else ["Buy", "Accumulate"])
 
-        f1, f2 = st.columns(2)
+        f1, f2, f3 = st.columns(3)
         min_rel = f1.slider("คะแนนความน่าเชื่อถือขั้นต่ำ", 0, 100, 0, 5)
         min_yr = f2.slider("จำนวนปีข้อมูลขั้นต่ำ", 0, 15, 0, 1,
                            help="หุ้นไทยมักมี 4 ปี · หุ้นสหรัฐได้ถึง 15 ปีจาก SEC")
+        # ---- ตัวกรองจากโมเดลคลาสสิก ----
+        #
+        # Piotroski เป็นตัวกรองที่ทรงพลังที่สุดในบรรดา 4 โมเดล
+        # เพราะงานวิจัยต้นฉบับพบว่าหุ้นถูก + F สูง ให้ผลตอบแทนดีกว่า
+        # หุ้นถูก + F ต่ำ อย่างมีนัยสำคัญทางสถิติ
+        has_f = "Piotroski F" in ok.columns and \
+            pd.to_numeric(ok["Piotroski F"], errors="coerce").notna().any()
+        min_f = f3.slider("Piotroski F ขั้นต่ำ", 0, 9, 0, 1,
+                          disabled=not has_f,
+                          help="งบดีขึ้นกี่ข้อจาก 9 ข้อ — 7 ขึ้นไปถือว่าแข็งแรง"
+                          if has_f else
+                          "ยังไม่มีข้อมูล ต้องรันวิเคราะห์ลึกรอบใหม่ก่อน")
 
         sel = ok[ok["คำแนะนำ"].isin(pick_lv)] if pick_lv else ok.iloc[0:0]
         if min_rel:
@@ -1322,7 +1334,14 @@ if MODE.startswith("🏆"):
         if min_yr:
             sel = sel[pd.to_numeric(sel["ปีข้อมูล"],
                                     errors="coerce").fillna(0) >= min_yr]
+        if min_f and has_f:
+            sel = sel[pd.to_numeric(sel["Piotroski F"],
+                                    errors="coerce").fillna(-1) >= min_f]
         sel = sel.sort_values("คะแนนรวม", ascending=False)
+
+        if not has_f:
+            st.caption("คอลัมน์โมเดลคลาสสิกจะทยอยเติมเมื่อวิเคราะห์ลึกรอบใหม่ "
+                       "— ตัวที่วิเคราะห์ไว้ก่อนหน้านี้จะยังว่าง")
 
         if sel.empty:
             # บอกให้ชัดว่าตัวกรองไหนตัดออกไป ไม่ใช่แค่ "ไม่เจอ"
@@ -1349,7 +1368,9 @@ if MODE.startswith("🏆"):
                         ["ticker", "คำแนะนำ", "คะแนนรวม", "ราคา",
                          "มูลค่าที่ประเมินได้", "ส่วนลด (%)", "โซนราคา",
                          "ความน่าเชื่อถือ", "คะแนนความน่าเชื่อถือ", "ปีข้อมูล",
-                         "Buffett", "คุณภาพ", "ความเสี่ยง", "กลุ่ม",
+                         "Buffett", "คุณภาพ", "ความเสี่ยง",
+                         "Altman Z", "Piotroski F", "Beneish M",
+                         "โอกาสล้มละลาย (%)", "กลุ่ม",
                          "ชื่อบริษัท"] if c in sel.columns]].copy()
             show = sort_controls(show, key=f"sb_{market}",
                                  default="คะแนนรวม", asc=False)
@@ -1369,7 +1390,9 @@ if MODE.startswith("🏆"):
                                   "กลุ่ม", "ชื่อบริษัท"),
                        dec_cols={"คะแนนรวม": 1, "ปีข้อมูล": 0,
                                  "คะแนนความน่าเชื่อถือ": 0, "Buffett": 0,
-                                 "คุณภาพ": 0, "ความเสี่ยง": 0})
+                                 "คุณภาพ": 0, "ความเสี่ยง": 0,
+                                 "Altman Z": 2, "Piotroski F": 0,
+                                 "Beneish M": 2, "โอกาสล้มละลาย (%)": 1})
             st.download_button(
                 "ดาวน์โหลดรายการนี้ (CSV)",
                 sel.to_csv(index=False).encode("utf-8-sig"),
@@ -2566,9 +2589,10 @@ RP.setup_matplotlib_font()
 # กราฟใช้พื้นหลังโปร่งใส เปลี่ยนแค่สีเส้นและตัวหนังสือให้เข้ากับธีม
 RP.set_chart_theme(dark=DARK)
 
-t0, t1, t2, t3, t4, t5, t6, t7, t9, t8 = st.tabs(
+t0, t1, t2, t3, t4, t5, t6, t7, t9, tD, t8 = st.tabs(
     ["⭐ คำแนะนำ", "ภาพรวม", "ผลประกอบการ", "อัตราส่วน", "ประเมินมูลค่า",
-     "ช่วงราคา", "พยากรณ์ 10 ปี", "ความเสี่ยง", "คุณภาพ & กูรู", "ข่าว & XD"])
+     "ช่วงราคา", "พยากรณ์ 10 ปี", "ความเสี่ยง", "คุณภาพ & กูรู",
+     "🔬 โมเดลคลาสสิก", "ข่าว & XD"])
 
 with t0:
     import recommend as RC
@@ -3224,6 +3248,124 @@ with t9:
                           "Howard Marks : *เราพยากรณ์อนาคตไม่ได้ "
                           "แต่รู้ได้ว่าตอนนี้ยืนอยู่ตรงไหนของวัฏจักร* — "
                           "หน้านี้จึงวัดตำแหน่ง ไม่ได้ทำนาย")
+
+
+# ---------------------------------------------------------------------------
+# แท็บโมเดลคลาสสิก — Altman Z · Piotroski F · Beneish M · Ohlson O
+#
+# ทำไมแยกแท็บ : 4 โมเดลนี้ต่างจากส่วนอื่นตรงที่ **ไม่ใช่สูตรที่เราคิดเอง**
+# แต่เป็นงานวิจัยที่ตีพิมพ์และถูกตรวจสอบโดยคนทั้งวงการมาหลายสิบปี
+# จึงควรแสดงแยกให้เห็นชัดว่าอันไหนเป็นของเรา อันไหนเป็นมาตรฐานสากล
+# ---------------------------------------------------------------------------
+with tD:
+    import distress as DT
+
+    @st.cache_data(show_spinner=False, ttl=1800)
+    def _distress(tk, _rid):
+        return DT.assess(S)
+
+    try:
+        DZ = _distress(ticker, id(S))
+    except Exception as e:
+        DZ = None
+        st.warning(f"คำนวณโมเดลคลาสสิกไม่ได้ ({type(e).__name__})")
+
+    if DZ:
+        st.caption(
+            "4 โมเดลนี้ **ไม่ใช่สูตรที่ระบบคิดเอง** แต่เป็นงานวิจัยที่ตีพิมพ์และ"
+            "ถูกตรวจสอบโดยนักวิชาการทั่วโลกมาหลายสิบปี ระบบเพียงใส่ตัวเลขลงสูตร  \n"
+            "**ขาดข้อมูลจะไม่คำนวณและบอกว่าขาดอะไร** ไม่มีการเติมค่าแทน")
+
+        sm = DZ["สรุป"]
+        if sm["คำเตือน"]:
+            st.warning("⚠️ " + sm["ข้อความ"])
+        else:
+            st.success("✅ " + sm["ข้อความ"])
+        if sm.get("ขัดแย้งกัน"):
+            st.info(sm["ขัดแย้งกัน"])
+
+        dc = st.columns(4)
+        _A, _P, _B, _O = (DZ["altman"], DZ["piotroski"],
+                          DZ["beneish"], DZ["ohlson"])
+        _COL = {"ปลอดภัย": "#1b6b3a", "แข็งแรง": "#1b6b3a",
+                "ไม่พบร่องรอย": "#1b6b3a", "เฝ้าระวัง": "#c9a227",
+                "ปานกลาง": "#c9a227", "ควรตรวจสอบ": "#d1793a",
+                "เสี่ยงสูง": "#c1442e", "อ่อนแอ": "#c1442e"}
+        metric_card(dc[0], "Altman Z",
+                    f"{_A['คะแนน']:.2f}" if _A["ใช้ได้"] else "—",
+                    _A["ระดับ"] if _A["ใช้ได้"] else "ใช้ไม่ได้",
+                    _COL.get(_A.get("ระดับ")))
+        metric_card(dc[1], "Piotroski F",
+                    f"{_P['คะแนน']}/{_P['เต็ม']}" if _P["ใช้ได้"] else "—",
+                    _P["ระดับ"] if _P["ใช้ได้"] else "ใช้ไม่ได้",
+                    _COL.get(_P.get("ระดับ")))
+        metric_card(dc[2], "Beneish M",
+                    f"{_B['คะแนน']:.2f}" if _B["ใช้ได้"] else "—",
+                    _B["ระดับ"] if _B["ใช้ได้"] else "ใช้ไม่ได้",
+                    _COL.get(_B.get("ระดับ")))
+        metric_card(dc[3], "Ohlson O — โอกาสล้มละลาย",
+                    f"{_O['ความน่าจะเป็น (%)']:.1f}%" if _O["ใช้ได้"] else "—",
+                    _O["ระดับ"] if _O["ใช้ได้"] else "ใช้ไม่ได้",
+                    _COL.get(_O.get("ระดับ")))
+
+        st.markdown("")
+
+        # ---------- Piotroski แสดงเป็นรายข้อ เพราะอ่านง่ายที่สุด ----------
+        with st.expander(
+                f"Piotroski F-Score — {'ได้ ' + str(_P['คะแนน']) + '/' + str(_P['เต็ม']) if _P['ใช้ได้'] else 'ใช้ไม่ได้'}",
+                expanded=_P["ใช้ได้"]):
+            if not _P["ใช้ได้"]:
+                st.info(_P["เหตุผล"])
+            else:
+                st.caption(
+                    "งานวิจัยของ Joseph Piotroski ปี 2000 พบว่าหุ้นราคาถูก "
+                    "(P/BV ต่ำ) ที่ได้คะแนนสูง ให้ผลตอบแทนดีกว่าหุ้นราคาถูก"
+                    "ที่ได้คะแนนต่ำอย่างมีนัยสำคัญ")
+                rows = []
+                for it in _P["รายข้อ"]:
+                    mark = ("✅ ผ่าน" if it["ผ่าน"] else
+                            ("— วัดไม่ได้" if it["ผ่าน"] is None else "❌ ไม่ผ่าน"))
+                    rows.append({"เกณฑ์": it["ข้อ"], "ผล": mark,
+                                 "ตัวเลขจริง": it["รายละเอียด"]})
+                pf = pd.DataFrame(rows)
+                pf.index = [str(i) for i in range(1, len(pf) + 1)]
+                html_table(pf, first_col="ข้อ", trim_year=False, fit=True,
+                           left_cols=("เกณฑ์", "ผล", "ตัวเลขจริง"))
+                st.caption(f"**{_P['คำอธิบาย']}**")
+
+        # ---------- อีก 3 โมเดล ----------
+        for _key, _m in (("altman", _A), ("beneish", _B), ("ohlson", _O)):
+            head = _m["โมเดล"]
+            if _m["ใช้ได้"]:
+                head += (f" — {_m['ความน่าจะเป็น (%)']:.1f}%"
+                         if _key == "ohlson" else f" — {_m['คะแนน']:.2f}")
+                head += f" ({_m['ระดับ']})"
+            else:
+                head += " — ใช้ไม่ได้"
+            with st.expander(head):
+                if not _m["ใช้ได้"]:
+                    st.info(_m["เหตุผล"])
+                    continue
+                st.markdown(f"**{_m['คำอธิบาย']}**")
+                if _m.get("รุ่นสูตร"):
+                    st.caption(f"สูตรที่ใช้ : {_m['รุ่นสูตร']}")
+                if _m.get("เกณฑ์"):
+                    st.caption(" · ".join(f"{k} {v}"
+                                          for k, v in _m["เกณฑ์"].items()))
+                if _m.get("หมายเหตุ"):
+                    st.caption(f"หมายเหตุ : {_m['หมายเหตุ']}")
+                if _m.get("ตัวแปร"):
+                    vt = pd.DataFrame({"ค่า": _m["ตัวแปร"]})
+                    html_table(vt, first_col="ตัวแปร", trim_year=False,
+                               fit=True, dec=4)
+
+        st.info(
+            "**อ่านผลอย่างไรให้ถูก**  \n"
+            "โมเดลเหล่านี้บอก *รูปแบบทางสถิติ* ไม่ได้บอกอนาคต — "
+            "Beneish ที่ขึ้นเตือนไม่ได้แปลว่าบริษัทโกง และ Altman ที่ต่ำ"
+            "ไม่ได้แปลว่าจะล้มแน่นอน  \n"
+            "**ใช้เป็นธงให้ไปตรวจสอบต่อ** ไม่ใช่ข้อสรุป — "
+            "และเมื่อโมเดลขัดแย้งกัน ให้เชื่อกระแสเงินสดจริงมากกว่าคะแนน")
 
 
 with t8:

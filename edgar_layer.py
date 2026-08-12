@@ -304,6 +304,13 @@ BALANCE_TAGS = {
     "Total Liabilities Net Minority Interest": ["Liabilities"],
     "Stockholders Equity": ["StockholdersEquity",
                             "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    # กำไรสะสม — จำเป็นสำหรับ Altman Z-Score (ตัวแปร X2)
+    #
+    # ถ้าไม่มีบรรทัดนี้ Altman คำนวณไม่ได้เลยแม้จะมีข้อมูลอื่นครบ
+    # ชื่อแท็กมาตรฐานของ US-GAAP คือ RetainedEarningsAccumulatedDeficit
+    # (ชื่อรวมคำว่า Deficit ไว้ด้วย เพราะบริษัทที่ขาดทุนสะสมใช้แท็กเดียวกัน
+    #  แต่ค่าเป็นลบ ซึ่งถูกต้องตามที่ Altman ต้องการ)
+    "Retained Earnings": ["RetainedEarningsAccumulatedDeficit"],
     # ไม่ใส่ LongTermDebt (ยอดรวมทั้งก้อน) เพราะจะนับซ้ำกับ Current Debt ด้านล่าง
     "Long Term Debt": ["LongTermDebtNoncurrent"],
     "Current Debt": ["LongTermDebtCurrent", "DebtCurrent"],
