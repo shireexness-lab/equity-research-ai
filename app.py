@@ -340,7 +340,8 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
                max_height=None, link_cols=(), link_target="_blank",
                link_headers=False, sort_cols=(),
                cur_sort=None, cur_asc=True, fit=False, left_cols=(),
-               dec_cols=None, sign_cols=(), sign_mask=None, dec_rows=None):
+               dec_cols=None, sign_cols=(), sign_mask=None, dec_rows=None,
+               sort_extra=None):
     """
     แสดง DataFrame เป็นตาราง HTML
 
@@ -353,6 +354,10 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
                  พร้อมตรึงหัวตารางไว้ด้านบน — ใช้กับรายการหุ้นยาว ๆ
     sort_cols  : ชื่อคอลัมน์ที่ "กดหัวตารางแล้วเรียงได้"
                  ▲ = เรียงน้อยไปมาก · ▼ = มากไปน้อย · ⇅ = กดเพื่อเรียง
+    sort_extra : ค่าที่จะติดไปกับลิงก์หัวตารางด้วย เช่น {"m": โหมด, "mk": ตลาด}
+                 **จำเป็นมาก** เพราะการกดหัวตารางทำให้เบราว์เซอร์โหลดหน้าใหม่
+                 = Streamlit เริ่ม session ใหม่ = ลืมว่าผู้ใช้อยู่หน้าไหน
+                 ถ้าไม่ส่งค่าพวกนี้ไปด้วย กดเรียงแล้วจะเด้งกลับหน้าแรก
     link_cols  : ชื่อคอลัมน์ที่จะทำเป็นลิงก์กดได้ (เช่น "ticker")
                  กดแล้วจะพาไปวิเคราะห์รายตัวของหุ้นตัวนั้น
                  กลไก : ลิงก์ใส่พารามิเตอร์ ?t=AAPL ต่อท้าย URL
@@ -372,8 +377,11 @@ def html_table(df: pd.DataFrame, first_col="รายการ", dec=2, trim_yea
             nxt = "desc" if (is_cur and cur_asc) else "asc"
             arrow = (" ▲" if cur_asc else " ▼") if is_cur else " ⇅"
             cls = "sh cur" if is_cur else "sh"
+            xtra = "".join(f"&{k}={quote(str(v))}"
+                           for k, v in (sort_extra or {}).items())
             h.append(f"<th><a class='{cls}' target='_self' "
-                     f"href='?sort={quote(str(c))}&order={nxt}'>{c}{arrow}</a></th>")
+                     f"href='?sort={quote(str(c))}&order={nxt}{xtra}'>"
+                     f"{c}{arrow}</a></th>")
         elif link_headers:
             # ---- หัวตารางเป็นชื่อหุ้น กดแล้วไปวิเคราะห์รายตัว ----
             #
@@ -480,9 +488,10 @@ HOME = "🏠 หน้าแรก"
 M_ONE = "วิเคราะห์รายตัว"
 M_SCREEN = "คัดกรองทั้งตลาด"
 M_DEEP = "วิเคราะห์ลึกหลายตัว"
+M_BUY = "🏆 รายการ Strong Buy"
 
 MODES = [HOME, "วิเคราะห์รายตัว", "คัดกรองทั้งตลาด", "วิเคราะห์ลึกหลายตัว",
-         "เปรียบเทียบ 2–10 ตัว", "🏆 รายการ Strong Buy", "💰 หุ้นปันผล"]
+         "เปรียบเทียบ 2–10 ตัว", M_BUY, "💰 หุ้นปันผล"]
 
 # คำอธิบายสั้น ๆ ใต้แต่ละเมนู — ช่วยให้เลือกถูกโดยไม่ต้องลองกดทีละอัน
 MODE_HELP = {
@@ -557,12 +566,34 @@ if "t" in _qp:
     st.session_state["ran"] = True
     st.query_params.clear()
 elif "sort" in _qp:
-    # กดหัวตารางเพื่อจัดเรียง — เก็บลง session แล้วล้าง URL
+    # ---- กดหัวตารางเพื่อจัดเรียง ----
+    #
+    # ลิงก์หัวตารางทำให้เบราว์เซอร์ **โหลดหน้าใหม่ทั้งหน้า** ซึ่งแปลว่า
+    # Streamlit เริ่ม session ใหม่และลืมทุกอย่าง — รวมทั้งลืมว่าผู้ใช้อยู่หน้าไหน
+    # ลิงก์จึงพ่วง m (โหมด) · mk (ตลาด) · cg (กลุ่ม) กลับมาด้วย
+    # แล้วตรงนี้เอาไปตั้งคืนก่อนที่หน้าจะวาด ผู้ใช้จึงอยู่ที่เดิม
     from urllib.parse import unquote
-    st.session_state["sort_col"] = unquote(str(_qp["sort"]))
-    st.session_state["sort_dir"] = ("น้อย → มาก"
-                                    if str(_qp.get("order", "asc")) == "asc"
-                                    else "มาก → น้อย")
+    _col = unquote(str(_qp["sort"]))
+    _asc = str(_qp.get("order", "asc")) == "asc"
+
+    _ns = unquote(str(_qp.get("ns", "")))
+    if _ns:
+        # ตารางที่มีการเรียงเป็นของตัวเอง (เช่นตารางสิ่งที่เปลี่ยนแปลง)
+        # ใช้ชื่อคีย์แยก จะได้ไม่ไปทับการเรียงของหน้าคัดกรอง
+        st.session_state[f"{_ns}_col"] = _col
+        st.session_state[f"{_ns}_asc"] = _asc
+    else:
+        st.session_state["sort_col"] = _col
+        st.session_state["sort_dir"] = "น้อย → มาก" if _asc else "มาก → น้อย"
+
+    if "m" in _qp:
+        _m = unquote(str(_qp["m"]))
+        if _m in MODES:
+            st.session_state["mode"] = _m
+    if "mk" in _qp:
+        st.session_state["deep_market"] = str(_qp["mk"])
+    if "cg" in _qp and "mk" in _qp:
+        st.session_state[f"chgrp_{str(_qp['mk'])}"] = str(_qp["cg"])
     st.query_params.clear()
 
 if "mode" not in st.session_state:
@@ -866,24 +897,87 @@ def deep_changes_panel(market: str):
                    f"{cmeta.get('บันทึกเมื่อ','-')[:16]}  \n"
                    "**คำแนะนำเปลี่ยนระดับ** คือสิ่งที่ควรดูก่อน — "
                    "ราคาขยับเฉย ๆ อาจเป็นความผันผวนปกติ")
-        pick = st.radio("ดูกลุ่มไหน",
-                        [f"เปลี่ยนระดับ ({len(lv):,})",
-                         f"ราคาขยับแรง ({len(pr):,})",
-                         f"เข้าใหม่ ({len(nw):,})",
-                         f"ทั้งหมด ({len(ch):,})"],
-                        horizontal=True, key=f"chpick_{market}")
-        sel = (lv if pick.startswith("เปลี่ยนระดับ") else
-               pr if pick.startswith("ราคาขยับ") else
-               nw if pick.startswith("เข้าใหม่") else ch)
+        codes = ["lv", "pr", "nw", "all"]
+        opts = [f"เปลี่ยนระดับ ({len(lv):,})",
+                f"ราคาขยับแรง ({len(pr):,})",
+                f"เข้าใหม่ ({len(nw):,})",
+                f"ทั้งหมด ({len(ch):,})"]
+        cur_g = st.session_state.get(f"chgrp_{market}", "lv")
+        pick = st.radio("ดูกลุ่มไหน", opts, horizontal=True,
+                        index=codes.index(cur_g) if cur_g in codes else 0,
+                        key=f"chpick_{market}")
+        code = codes[opts.index(pick)]
+        st.session_state[f"chgrp_{market}"] = code
+        sel = {"lv": lv, "pr": pr, "nw": nw, "all": ch}[code]
         if sel.empty:
             st.info("ไม่มีรายการในกลุ่มนี้")
             return
+
+        # ---- จัดเรียง ----
+        #
+        # มีสองทางให้เลือกใช้ เพราะทั้งสองทางมีข้อดีคนละแบบ
+        #   1. กดหัวตาราง  — เร็วที่สุด แต่ต้องโหลดหน้าใหม่ (ดูหมายเหตุที่ตัวอ่าน ?sort=)
+        #   2. ช่องเลือก   — ไม่โหลดหน้าใหม่ ใช้ได้กับทุกคอลัมน์ และกดง่ายบนมือถือ
+        ns = f"chsort_{market}"
+        s_col = st.session_state.get(f"{ns}_col")
+        s_asc = st.session_state.get(f"{ns}_asc", False)
+
+        num_cols = [c for c in sel.columns
+                    if pd.to_numeric(sel[c], errors="coerce").notna().sum()
+                    >= max(1, len(sel) // 2)]
+        pick_cols = [c for c in sel.columns if c != "ticker"]
+
+        # เลือกคอลัมน์ตั้งต้นที่ **มีข้อมูลจริงในกลุ่มนี้**
+        # กลุ่ม "เข้าใหม่" ไม่มีค่าในช่องส่วนลดขยับเลย (ไม่มีของเดิมให้เทียบ)
+        # ถ้าตั้งเป็นคอลัมน์นั้นไว้ กดเรียงแล้วตารางจะนิ่งสนิทเหมือนปุ่มเสีย
+        def _has_data(c):
+            return sel[c].astype(str).str.strip().replace("nan", "").ne("").any()
+
+        if s_col not in pick_cols or not _has_data(s_col):
+            s_col = next((c for c in ["ส่วนลดขยับ", "คะแนนใหม่", "ชื่อบริษัท"]
+                          if c in pick_cols and _has_data(c)),
+                         next((c for c in pick_cols if _has_data(c)),
+                              pick_cols[0]))
+
+        c1, c2 = st.columns([3, 2])
+        s_col = c1.selectbox(
+            "เรียงตาม", pick_cols, index=pick_cols.index(s_col),
+            key=f"{ns}_pick",
+            help="หรือกดที่หัวตารางก็เรียงได้เหมือนกัน")
+        s_asc = c2.radio("ลำดับ", ["มาก → น้อย", "น้อย → มาก"],
+                         index=0 if not s_asc else 1, horizontal=True,
+                         key=f"{ns}_dir") == "น้อย → มาก"
+        st.session_state[f"{ns}_col"] = s_col
+        st.session_state[f"{ns}_asc"] = s_asc
+
+        # เรียงตัวเลขด้วยค่า ไม่ใช่ตัวอักษร — ไม่งั้น 100 จะมาก่อน 9
+        #
+        # ช่องคำแนะนำต้องเรียงตาม **ระดับ** ไม่ใช่ตัวอักษร
+        # เรียงตามตัวอักษรจะได้ Accumulate · Buy · Hold · Reduce · Sell · Strong Buy
+        # คือ Strong Buy ไปอยู่ท้ายสุดติดกับ Sell ซึ่งอ่านแล้วเข้าใจผิดได้ทันที
+        if s_col in ("คำแนะนำเดิม", "คำแนะนำใหม่"):
+            # กลับลำดับให้ Strong Buy = ค่ามากที่สุด
+            # "มาก → น้อย" จึงหมายถึง "ดีที่สุดขึ้นก่อน" ตามที่คนคาด
+            rank = {v: len(DS.ORDER) - 1 - i for i, v in enumerate(DS.ORDER)}
+            keyser = sel[s_col].map(lambda v: rank.get(str(v).strip()))
+        elif s_col in num_cols:
+            keyser = pd.to_numeric(sel[s_col], errors="coerce")
+        else:
+            keyser = sel[s_col].astype(str)
+        sel = (sel.assign(_k=keyser)
+                  .sort_values("_k", ascending=s_asc, na_position="last")
+                  .drop(columns=["_k"]))
+
         show = sel.copy()
         show.index = [str(i) for i in range(1, len(show) + 1)]
         html_table(show, first_col="ลำดับ", trim_year=False, fit=True,
                    max_height=460, left_cols=("ชื่อบริษัท", "การเปลี่ยนแปลง"),
                    link_cols=("ticker",), link_target="_self",
-                   sign_cols=("ส่วนลดขยับ",))
+                   sign_cols=("ส่วนลดขยับ",),
+                   sort_cols=tuple(pick_cols),
+                   cur_sort=s_col, cur_asc=s_asc,
+                   sort_extra={"ns": ns, "m": M_BUY,
+                               "mk": market, "cg": code})
 
 
 # ---------------------------------------------------------------------------
@@ -1183,8 +1277,12 @@ if MODE.startswith("🏆"):
         "— กดปุ่มบนเว็บแล้วรอไม่ได้  \n"
         "จึงแยกเป็น **รันข้ามคืนบน MacBook → เปิดเว็บดูผลใน 2 วินาที**")
 
-    mk = st.radio("ตลาด", ["🇹🇭 หุ้นไทย", "🇺🇸 หุ้นสหรัฐ"], horizontal=True)
+    # index ต้องตั้งจาก session เพราะกดหัวตารางเพื่อเรียงจะโหลดหน้าใหม่
+    # ถ้าไม่ตั้งคืน คนที่ดูหุ้นสหรัฐอยู่จะถูกดีดกลับไปหุ้นไทยทุกครั้งที่กดเรียง
+    mk = st.radio("ตลาด", ["🇹🇭 หุ้นไทย", "🇺🇸 หุ้นสหรัฐ"], horizontal=True,
+                  index=1 if st.session_state.get("deep_market") == "us" else 0)
     market = "thai" if mk.startswith("🇹🇭") else "us"
+    st.session_state["deep_market"] = market
 
     @st.cache_data(show_spinner=False, ttl=300)
     def _deep(mkt):
