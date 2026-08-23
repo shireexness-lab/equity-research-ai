@@ -23,3 +23,6 @@ output/
 
 # ขยะของ Mac
 .DS_Store
+
+# กุญแจ FRED — ห้ามขึ้น GitHub เด็ดขาด (repo นี้เป็นสาธารณะ)
+.fred_key
